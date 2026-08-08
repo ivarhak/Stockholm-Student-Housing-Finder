@@ -1,3 +1,5 @@
+<img width="1440" height="811" alt="Screenshot 2026-08-08 at 9 30 32 PM" src="https://github.com/user-attachments/assets/c0b398f4-ac31-46c2-b48a-c7dde8380526" />
+
 # Stockholm Student Housing Finder
 
 A local tool that checks what SSSB student housing is currently available,
