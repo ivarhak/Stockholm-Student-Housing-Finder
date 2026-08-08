@@ -297,6 +297,12 @@
   .legend button[data-g="City"] .sw{background:var(--leaf);}
   .legend button[data-p="SSSB"] .sw{background:var(--teal);}
   .legend button[data-p="Bostadsförmedlingen"] .sw{background:var(--plum);}
+  #groceryChip .sw{background:var(--ochre);border-radius:50%;}
+  /* Toggle is on but the map is zoomed out past the threshold: dimmed like an
+     off chip, but dashed, so "on and waiting" reads differently from "off". */
+  #groceryChip.zoomed-out{opacity:0.55;border-style:dashed;}
+  /* No rule for the grocery dots on purpose: they're canvas-rendered, so CSS
+     can't reach them and their colour is resolved in JS (see cssVar). */
 
   #browseAllBtn{
     font-family:var(--mono);
@@ -470,9 +476,13 @@
   }
   .panel-header .stats-row{
     display:flex;gap:10px;margin-top:10px;
+    /* Wraps rather than squeezing: with three gauges in a 340px sidebar,
+       flex:1 each gives ~100px columns and every label breaks mid-word. */
+    flex-wrap:wrap;
   }
   .gauge{
-    flex:1;
+    flex:1 1 calc(50% - 5px);
+    min-width:0;
     background:var(--card);
     border:1px solid var(--rule);
     border-radius:3px;
@@ -728,6 +738,8 @@
       <div class="legend" id="providerChips">
         <button data-p="SSSB"><span class="sw"></span>SSSB</button>
         <button data-p="Bostadsförmedlingen"><span class="sw"></span>Bostadsförm.</button>
+        <button id="groceryChip" class="off" hidden
+                title="Show chain supermarkets on the map"><span class="sw"></span>Shops</button>
       </div>
     </div>
 
@@ -1141,6 +1153,13 @@ function floorLabel(n){
 }
 
 function render(){
+  // Cheap: only rebuilds when the store list actually differs from what's drawn,
+  // so this doesn't undo the point of keeping groceries out of renderMap().
+  const stores = (currentData && currentData.groceries) || [];
+  if (leafletMap && stores.length !== (groceryDrawnCount)) {
+    groceryDrawnCount = stores.length;
+    buildGroceryLayer();
+  }
   renderSchoolPicker();
   renderMeta();
   renderMap();
@@ -1237,6 +1256,13 @@ function sssbListingsInArea(name){
 let leafletMap;
 function initMap(){
   leafletMap = L.map('map', { zoomControl:true, attributionControl:false }).setView(centre(), 12);
+  // Canvas for the grocery dots ONLY, as an explicit per-layer renderer rather
+  // than the map-wide `preferCanvas` flag. Global canvas would also move the
+  // polylines off SVG, and the dashed area→campus line is coloured by CSS class
+  // — which silently stops applying once it's painted to a canvas, leaving the
+  // line Leaflet's default blue. Scoping it keeps both: hundreds of dots in one
+  // canvas element, polylines still styleable from CSS.
+  groceryRenderer = L.canvas({ padding: 0.5 });
   L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
     maxZoom: 18
   }).addTo(leafletMap);
@@ -1249,6 +1275,12 @@ function initMap(){
       }).addTo(leafletMap);
     });
   });
+
+  buildGroceryLayer();
+
+  // Dots are only drawn from GROCERY_MIN_ZOOM in, so the layer has to be
+  // reconsidered when the zoom crosses that line.
+  leafletMap.on('zoomend', syncGroceryLayer);
 
   // .panel-header sticks just below .tabs — measure the real rendered
   // height rather than hardcoding it, so a font/zoom change can't leave a
@@ -1274,6 +1306,79 @@ function renderSchools(){
     if (!isCentre) marker.on('click', () => setSchool(id));
     markers.push(marker);
   });
+}
+
+// Canvas-rendered shapes can't be styled from CSS: `className` never reaches the
+// DOM, and Leaflet paints straight to a <canvas> from the path options. So the
+// theme token has to be resolved to a real colour here and reapplied whenever
+// the theme flips — unlike the divIcon markers, which do read var() live.
+function cssVar(name){
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// ---- grocery stores ----
+// Deliberately NOT part of renderMap(): that tears down and rebuilds every
+// marker on each slider drag, and these don't depend on any filter, so putting
+// a few hundred of them in that loop would make the sliders feel sticky for no
+// reason. Built once, then only shown or hidden.
+let groceryLayer = null;
+let showGroceries = false;
+let groceryDrawnCount = -1;
+let groceryRenderer = null;
+// Below this zoom the dots blanket the city and bury the area roundels, which
+// are the actual point of the map. They earn their place once you've zoomed into
+// a neighbourhood to size it up.
+const GROCERY_MIN_ZOOM = 13;
+
+function buildGroceryLayer(){
+  if (groceryLayer) { leafletMap.removeLayer(groceryLayer); groceryLayer = null; }
+  const stores = (currentData && currentData.groceries) || [];
+  if (!stores.length) { syncGroceryToggle(0); return; }
+  groceryLayer = L.layerGroup(stores.map(s =>
+    L.circleMarker(s.coords, {
+      radius: 3.5,
+      stroke: false,
+      fillColor: cssVar('--ochre'),
+      fillOpacity: 0.85,
+      interactive: true,
+      renderer: groceryRenderer,
+    }).bindTooltip(`${s.name} · grocery`, { direction:'top', opacity:0.9 })
+  ));
+  syncGroceryToggle(stores.length);
+  syncGroceryLayer();
+}
+
+// Called after a theme flip: same layer, new fill. Cheaper and less disruptive
+// than rebuilding several hundred markers.
+function restyleGroceries(){
+  if (!groceryLayer) return;
+  const fill = cssVar('--ochre');
+  groceryLayer.eachLayer(l => l.setStyle({ fillColor: fill }));
+}
+
+function syncGroceryLayer(){
+  if (!groceryLayer) return;
+  const wanted = showGroceries && leafletMap.getZoom() >= GROCERY_MIN_ZOOM;
+  const on = leafletMap.hasLayer(groceryLayer);
+  if (wanted && !on) groceryLayer.addTo(leafletMap);
+  else if (!wanted && on) leafletMap.removeLayer(groceryLayer);
+  const chip = document.getElementById('groceryChip');
+  if (chip) {
+    // Says why nothing appeared, rather than looking broken when the toggle is
+    // on but you're zoomed out too far.
+    chip.classList.toggle('zoomed-out', showGroceries && !wanted);
+    chip.title = !showGroceries ? 'Show chain supermarkets on the map'
+      : (wanted ? 'Hide chain supermarkets' : `Zoom in to at least level ${GROCERY_MIN_ZOOM} to see the shops`);
+  }
+}
+
+function syncGroceryToggle(count){
+  const chip = document.getElementById('groceryChip');
+  if (!chip) return;
+  // No data (older saved file, or the lookup failed) — hide the control rather
+  // than offer a toggle that does nothing.
+  chip.hidden = count === 0;
+  chip.classList.toggle('off', !showGroceries);
 }
 
 function renderMap(){
@@ -1354,6 +1459,15 @@ function fmtCommute(obj){
     `<div class="g-value">${routed ? m.bike_km : m.distance_km}` +
     `<small> km · ${bikeLabel(m)}</small></div></div>`);
   parts.push(`<div class="gauge"><div class="g-label">Transit (real)</div><div class="g-value">${typeof m.transit_min === 'number' ? m.transit_min + '<small> min</small>' : '<small>no API key set</small>'}</div></div>`);
+  // Straight-line, like the distance gauge above it — labelled so, since a
+  // 300 m crow-flies shop can still be a 700 m walk.
+  const g = obj && obj.nearest_grocery;
+  if (g) {
+    const km = g.distance_m >= 1000;
+    parts.push(`<div class="gauge"><div class="g-label">Nearest shop</div>` +
+      `<div class="g-value">${km ? (g.distance_m / 1000).toFixed(1) : g.distance_m}` +
+      `<small> ${km ? 'km' : 'm'} · ${g.chain}</small></div></div>`);
+  }
   return parts.join('');
 }
 
@@ -1401,6 +1515,11 @@ function rowHtml(l, newIds){
   if (l.elevator === true) extras.push('elevator');
   if (l.balcony === true) extras.push('balcony');
   if (l.max_years != null) extras.push('max ' + l.max_years + ' år');
+  // Area-level, so it only applies to SSSB rows; BF ads carry their own coords
+  // and aren't grouped into an area with a precomputed figure.
+  const near = l.provider === 'SSSB' && !selectedArea && commuteRef && commuteRef.nearest_grocery;
+  if (near) extras.push(`${near.chain} ${near.distance_m >= 1000
+    ? (near.distance_m / 1000).toFixed(1) + ' km' : near.distance_m + ' m'} away`);
   return `
     <div class="listing-row" onclick="handleRowClick('${l.id.replace(/'/g,"\\'")}')">
       ${newIds.has(l.id) ? '<span class="new-tag">NEW</span>' : ''}
@@ -1618,6 +1737,14 @@ document.getElementById('legend').addEventListener('click', (e) => {
 document.getElementById('providerChips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  if (btn.id === 'groceryChip') {
+    // Shares the chip row with the provider filters but isn't one — it toggles a
+    // map layer, and touches neither the listings nor any count.
+    showGroceries = !showGroceries;
+    btn.classList.toggle('off', !showGroceries);
+    syncGroceryLayer();
+    return;
+  }
   const p = btn.dataset.p;
   if (activeProviders.has(p)) { activeProviders.delete(p); btn.classList.add('off'); }
   else { activeProviders.add(p); btn.classList.remove('off'); }
@@ -1645,6 +1772,7 @@ function applyTheme(theme){
   btn.title = next;
   btn.setAttribute('aria-label', next);
   document.getElementById('themeToggleLabel').textContent = light ? 'Light' : 'Dark';
+  restyleGroceries();
 }
 
 let currentTheme = 'dark';

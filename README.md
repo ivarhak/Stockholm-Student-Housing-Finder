@@ -274,6 +274,20 @@ with "Start in" set to this folder.
   still loads where storage is blocked (it just won't persist there). That's the
   only browser storage this file touches; everything else about what's new since
   the last check is computed server-side.
+- **Chain supermarkets on the map.** The **Shops** chip (next to the provider
+  chips) draws a dot for every ICA, Coop, Willys, Hemköp, Lidl and City Gross in
+  greater Stockholm, from OpenStreetMap. Off by default, and only drawn from zoom
+  13 in — at city zoom a few hundred dots bury the area roundels, which are the
+  point of the map. The chip goes dashed when it's on but you're zoomed too far
+  out, so nothing looks broken.
+  Every area also gets a **nearest shop** figure computed at scrape time, shown
+  in the area's gauges and on rows in the cross-area list. It's straight-line
+  distance, like the distance gauge next to it — a 300 m crow-flies shop can
+  still be a 700 m walk.
+  Shops are cached in `data/grocery_cache.json` for 30 days, since supermarkets
+  don't move and re-fetching them every scrape would be pointless load on a free
+  community service. `OVERPASS_URL` overrides the endpoint. If the lookup fails
+  the run says so and carries on without dots.
 - **Area colours match the tunnelbana.** A roundel's colour is the line its
   area sits on — North blue, South red, City green — matching the three lines
   drawn on the map in official SL colours. Gray × means an area exists but has

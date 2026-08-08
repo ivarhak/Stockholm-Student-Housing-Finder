@@ -121,6 +121,7 @@ DATA_DIR.mkdir(exist_ok=True)
 CURRENT_FILE = DATA_DIR / "current_listings.json"
 GEOCODE_CACHE_FILE = DATA_DIR / "geocode_cache.json"
 BIKE_ROUTE_CACHE_FILE = DATA_DIR / "bike_route_cache.json"
+GROCERY_CACHE_FILE = DATA_DIR / "grocery_cache.json"
 DEBUG_HTML_FILE = Path(__file__).parent / "debug_page.html"
 
 PORT = int(os.environ.get("PORT", 5055))
@@ -330,6 +331,158 @@ def geocode_area(name: str, cache: dict) -> tuple | None:
     cache[name] = None
     _save_geocode_cache(cache)
     return None
+
+
+# ── Grocery stores (OpenStreetMap Overpass — free, no key) ───────────────
+#
+# "Is there a supermarket near this place?" is a real question when picking
+# somewhere to live, and it's the one thing neither housing source says anything
+# about. OSM has it, so this pulls the big chains once and caches them: shops
+# don't move, so re-fetching on every scrape would be pointless load on a free
+# community service. Same convention as the geocode and bike-route caches.
+
+OVERPASS_URL = os.environ.get("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
+# Greater Stockholm, comfortably covering every SSSB area and the BF ads —
+# Flemingsberg in the south, Kista in the north-west.
+GROCERY_BBOX = (59.15, 17.75, 59.50, 18.35)   # south, west, north, east
+GROCERY_MAX_AGE_DAYS = 30
+
+# Only the chains, deliberately. Matching every `shop=convenience` would triple
+# the count with corner shops and kiosks, which isn't what "grocery store" means
+# when you're working out whether you can do a weekly shop nearby.
+GROCERY_CHAINS = {
+    "ICA": ("ica",),
+    "Coop": ("coop",),
+    "Willys": ("willys",),
+    "Hemköp": ("hemköp", "hemkop"),
+    "Lidl": ("lidl",),
+    "City Gross": ("city gross", "citygross"),
+}
+
+
+def _grocery_chain(*names) -> str | None:
+    """Which chain a store belongs to, by brand or name, or None for an
+    independent. Checked against `brand` first since that's the tag that's
+    actually meant to carry it; `name` is the fallback because plenty of Swedish
+    entries only fill in "ICA Nära Something"."""
+    for value in names:
+        if not value:
+            continue
+        low = str(value).lower()
+        for chain, needles in GROCERY_CHAINS.items():
+            if any(n in low for n in needles):
+                return chain
+    return None
+
+
+def _load_grocery_cache() -> dict | None:
+    """Cached stores, or None if missing/stale/unreadable."""
+    if not GROCERY_CACHE_FILE.exists():
+        return None
+    try:
+        cached = json.loads(GROCERY_CACHE_FILE.read_text())
+        fetched = datetime.fromisoformat(cached["fetched_at"])
+    except (ValueError, KeyError, TypeError, OSError):
+        return None
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    age_days = (datetime.now(timezone.utc) - fetched).total_seconds() / 86400
+    if age_days > GROCERY_MAX_AGE_DAYS:
+        print(f"  grocery cache is {age_days:.0f} days old — refetching")
+        return None
+    print(f"  {len(cached['stores'])} grocery store(s) from cache "
+          f"({age_days:.0f} days old)")
+    return cached
+
+
+def fetch_grocery_stores() -> list[dict]:
+    """Chain supermarkets in greater Stockholm, as [{name, chain, coords}].
+
+    Never fatal: the map is perfectly usable without shop dots, so any failure
+    degrades to an empty list with a printed reason rather than stopping a scrape.
+    """
+    cached = _load_grocery_cache()
+    if cached:
+        return cached["stores"]
+
+    south, west, north, east = GROCERY_BBOX
+    bbox = f"{south},{west},{north},{east}"
+    # `out center` so ways (a supermarket mapped as a building outline rather
+    # than a point) still come back with a single coordinate.
+    query = f"""
+[out:json][timeout:90];
+(
+  node["shop"="supermarket"]({bbox});
+  way["shop"="supermarket"]({bbox});
+);
+out center tags;
+"""
+    print(f"fetching grocery stores from OpenStreetMap (Overpass, cached "
+          f"{GROCERY_MAX_AGE_DAYS} days)...")
+    try:
+        resp = requests.post(
+            OVERPASS_URL,
+            data={"data": query},
+            headers={"User-Agent": "personal student-housing monitor"},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        elements = resp.json().get("elements", [])
+    except (requests.RequestException, ValueError) as e:
+        print(f"  ! grocery lookup failed ({type(e).__name__}: {e}) — "
+              "continuing without shop markers")
+        return []
+
+    stores, skipped, no_coords = [], 0, 0
+    for el in elements:
+        tags = el.get("tags") or {}
+        chain = _grocery_chain(tags.get("brand"), tags.get("operator"), tags.get("name"))
+        if not chain:
+            skipped += 1
+            continue
+        centre = el.get("center") or el
+        lat, lon = centre.get("lat"), centre.get("lon")
+        if lat is None or lon is None:
+            # A way whose geometry Overpass didn't resolve. Counted rather than
+            # dropped silently, so the printed numbers add up to the input.
+            no_coords += 1
+            continue
+        stores.append({
+            "name": tags.get("name") or chain,
+            "chain": chain,
+            "coords": [round(float(lat), 6), round(float(lon), 6)],
+        })
+
+    from collections import Counter
+    counts = Counter(s["chain"] for s in stores)
+    print(f"  {len(elements)} supermarkets in the box → kept {len(stores)} chain "
+          f"store(s), skipped {skipped} independent/unbranded"
+          + (f", {no_coords} without coordinates" if no_coords else ""))
+    print("  " + ", ".join(f"{c} ({n})" for c, n in counts.most_common()))
+
+    if stores:
+        GROCERY_CACHE_FILE.write_text(json.dumps(
+            {"fetched_at": datetime.now(timezone.utc).isoformat(), "stores": stores},
+            ensure_ascii=False, indent=1))
+    return stores
+
+
+def nearest_grocery(coords: tuple, stores: list[dict]) -> dict | None:
+    """The closest chain store to a point, as {name, chain, distance_m}.
+
+    Straight-line, not walking distance — a routed figure per area per store
+    would be hundreds of requests for a number whose job is "is there one
+    nearby, roughly". The dashboard labels it as a crow-flies distance.
+    """
+    best, best_km = None, None
+    for store in stores:
+        km = haversine_km(coords, tuple(store["coords"]))
+        if best_km is None or km < best_km:
+            best, best_km = store, km
+    if best is None:
+        return None
+    return {"name": best["name"], "chain": best["chain"],
+            "distance_m": int(round(best_km * 1000))}
 
 
 # ── Commute calculations ─────────────────────────────────────────────────
@@ -1484,6 +1637,7 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     previous_ids = {l["id"] for l in previous["listings"]}
 
     geocode_cache = _load_geocode_cache()
+    grocery_stores = fetch_grocery_stores()
     print("geocoding areas (cached after first run)...")
     if bike_routes:
         print(f"working out cycling routes to {len(SCHOOLS)} campuses "
@@ -1504,6 +1658,10 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
                 # older saved files and any code reading the old shape still work.
                 "straight_line": straight_line_estimate(coords) if coords else None,
                 "transit_min": per_school[DEFAULT_SCHOOL]["transit_min"] if per_school else None,
+                # One number beats 300 map dots for "can I buy food here" — the
+                # dots are for browsing, this is for deciding.
+                "nearest_grocery": (nearest_grocery(coords, grocery_stores)
+                                    if coords and grocery_stores else None),
             }
 
     sssb_listings = None
@@ -1576,6 +1734,9 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         "default_school": DEFAULT_SCHOOL,
         "areas": area_info,
         "listings": listings,
+        # Chain supermarkets, for the map's optional shop dots. Sent as a flat
+        # list rather than per-area because they're their own map layer.
+        "groceries": grocery_stores,
         "new_listing_ids": [l["id"] for l in new_listings],
     }
     CURRENT_FILE.write_text(json.dumps(result, indent=2, ensure_ascii=False))
