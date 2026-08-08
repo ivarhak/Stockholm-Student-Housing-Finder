@@ -331,8 +331,6 @@ with "Start in" set to this folder.
   those ads show *elevator* / *balcony* on their row where stated — but for the
   same reason as electricity above, they're display-only, since a filter would
   have hidden every SSSB listing rather than narrowed anything.
-- **If SSSB changes their site**, the selectors in step 3 are the only
-  place you should need to touch.
 - **Rate limiting**: don't drop the cron interval much below ~15 minutes —
   there's no need to hammer their login endpoint, and it's not clear how
   they'd react to it.
