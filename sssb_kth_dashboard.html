@@ -388,6 +388,16 @@
     text-align:right;
     line-height:1.5;
   }
+  /* Shown only on the static build, in place of the Refresh button. */
+  #sourceNote{
+    max-width:340px;
+    margin-top:2px;
+    font-size:9.5px;
+    line-height:1.45;
+    color:var(--dim);
+  }
+  #sourceNote[hidden]{display:none;}
+  #sourceNote a{color:var(--teal);}
 
   /* ── Main layout ─────────────────────────────────────── */
   main{
@@ -639,6 +649,7 @@
     <div id="lastUpdated">—</div>
     <div id="listingCount">—</div>
     <div id="autoStatus" style="color:var(--teal);"></div>
+    <div id="sourceNote" hidden></div>
   </div>
 
   <button id="browseAllBtn">
@@ -1012,6 +1023,17 @@ function setRefreshing(on, mine){
   }
 }
 
+// Where the data comes from. Two deployments, one code path:
+//   'server' — Flask is serving this page, so /api/... is real and Refresh works.
+//   'static' — GitHub Pages, where there is no Python. A scheduled scrape has
+//              already written listings.json next to this file.
+//   'demo'   — neither reachable; the built-in example set, with a banner.
+// The static file is fetched with a *relative* URL because a Pages project site
+// is served from /<repo>/, not the root — an absolute '/listings.json' would
+// resolve against the domain and 404.
+let dataSource = 'demo';
+const STATIC_DATA_URL = './listings.json';
+
 async function loadData(triggerRefresh){
   if (triggerRefresh) {
     myRefreshInFlight = true;
@@ -1022,16 +1044,48 @@ async function loadData(triggerRefresh){
     const res = await fetch(url, { method: triggerRefresh ? 'POST' : 'GET' });
     if (!res.ok) throw new Error('bad response');
     currentData = await res.json();
+    dataSource = 'server';
   } catch (e) {
-    currentData = DEMO_DATA;
-    showBanner('Showing example data — start the local server (python sssb_kth_monitor.py --serve) and open http://localhost:5055 for live listings.');
+    try {
+      // no-store so a reload always sees what the last scheduled scrape wrote,
+      // rather than whatever the CDN cached for this URL.
+      const res = await fetch(STATIC_DATA_URL, { cache: 'no-store' });
+      if (!res.ok) throw new Error('no static data');
+      currentData = await res.json();
+      dataSource = 'static';
+    } catch (e2) {
+      currentData = DEMO_DATA;
+      dataSource = 'demo';
+      showBanner('Showing example data — start the local server (python sssb_kth_monitor.py) and open http://localhost:5055 for live listings.');
+    }
   }
   lastGeneratedAt = currentData.generated_at;
   if (triggerRefresh) {
     myRefreshInFlight = false;
     setRefreshing(false);
   }
+  applyDataSourceChrome();
   render();
+}
+
+// Static builds have no server to ask for a re-scrape, so the Refresh button
+// would be a button that cannot work. Hide it and say when the data is from and
+// how often it updates instead — that's the honest version of the same
+// information.
+function applyDataSourceChrome(){
+  const isStatic = dataSource === 'static';
+  document.querySelector('.refresh-wrap').hidden = isStatic;
+  const src = document.getElementById('sourceNote');
+  src.hidden = !isStatic;
+  if (isStatic) {
+    const every = currentData.update_every_hours;
+    src.innerHTML =
+      'Updates'
+      + (every ? ` every ${every} ${every === 1 ? 'hour' : 'hours'}` : ' a few times a day')
+      + ' · unofficial view of <a href="https://sssb.se" target="_blank" rel="noopener noreferrer">sssb.se</a>'
+      + ' + <a href="https://bostad.stockholm.se" target="_blank" rel="noopener noreferrer">bostad.stockholm.se</a>'
+      + ' — apply there.';
+  }
 }
 
 function commuteMinutes(obj){
@@ -1616,7 +1670,11 @@ document.getElementById('refreshBtn').addEventListener('click', () => {
 document.getElementById('browseAllBtn').addEventListener('click', toggleBrowseAll);
 
 initMap();
-loadData(false);
+// The first load decides which data source we're on, and the poll behaves
+// differently per source — so let it finish before the first poll rather than
+// racing it. Without this, a static build fires one pointless /api/status on
+// load, before it knows there's no server to ask.
+const firstLoad = loadData(false);
 
 // Pick up whatever the background --serve auto-check produces, without needing
 // a manual click or page reload. Checking once a minute is what keeps the delay
@@ -1630,6 +1688,23 @@ loadData(false);
 let serverScraping = false;
 
 async function pollForChanges(){
+  // Static build: there's no /api/status to ask, so watch the data file itself.
+  // The scheduled scrape rewrites it every couple of hours, and a page left open
+  // should pick that up without anyone reloading.
+  if (dataSource === 'static') {
+    try {
+      const res = await fetch(STATIC_DATA_URL, { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.generated_at && data.generated_at !== lastGeneratedAt) {
+        currentData = data;
+        lastGeneratedAt = data.generated_at;
+        applyDataSourceChrome();
+        render();
+      }
+    } catch (e) { /* offline; keep showing what's on screen */ }
+    return;
+  }
   try {
     const res = await fetch('/api/status');
     if (!res.ok) return;
@@ -1656,11 +1731,25 @@ function scheduleNextPoll(){
   setTimeout(async () => {
     await pollForChanges();
     scheduleNextPoll();
-  }, (serverScraping || myRefreshInFlight) ? 3000 : 60000);
+  }, nextPollDelay());
+}
+
+function nextPollDelay(){
+  if (serverScraping || myRefreshInFlight) return 3000;
+  // The static build's data only changes when the scheduled scrape runs, so
+  // checking every 15 minutes is plenty — and unlike /api/status this poll pulls
+  // the whole payload, so there's no point doing it every minute.
+  if (dataSource === 'static') return 15 * 60 * 1000;
+  return 60000;
 }
 // Run one immediately so a page loaded mid-scrape shows the right button state
 // straight away instead of up to a minute later.
-pollForChanges().then(scheduleNextPoll);
+firstLoad
+  // One poll straight away so a *server* page loaded mid-scrape shows the right
+  // button state immediately. Pointless on a static build, which has just read
+  // the only file there is to read.
+  .then(() => (dataSource === 'static' ? null : pollForChanges()))
+  .then(scheduleNextPoll);
 </script>
 </body>
 </html>

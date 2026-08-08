@@ -1,0 +1,125 @@
+name: Publish dashboard
+
+# Scrapes on a schedule and publishes the result as a static site on GitHub
+# Pages. The dashboard is the same file the local Flask version serves — it just
+# reads listings.json instead of /api/listings when no server answers, so there
+# is one UI to maintain rather than two.
+#
+# Before the first run, set Settings → Pages → Build and deployment →
+# Source: "GitHub Actions". Without that the deploy step fails.
+
+on:
+  schedule:
+    # Every two hours. Deliberately at :17 rather than :00 — GitHub's scheduler
+    # is busiest on the hour and delays runs that pile up there.
+    - cron: '17 */2 * * *'
+  workflow_dispatch:      # lets you publish on demand from the Actions tab
+  push:
+    branches: [main]
+    # Republish when the UI itself changes, without waiting for the next scrape.
+    paths:
+      - 'sssb_kth_dashboard.html'
+      - '.github/workflows/publish.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two publishes race. Not cancel-in-progress: a half-finished deploy
+# is worse than a slightly late one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Kept in step with the cron above; the dashboard prints it so the page can
+  # say how often it updates without hardcoding the number in two places.
+  UPDATE_EVERY_HOURS: '2'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Show Chrome version
+        # SSSB's vacancy list is a JS shell, so the scrape falls back to Selenium
+        # and needs a real browser. ubuntu-latest ships Chrome; print it so a
+        # runner image change that drops it is obvious in the log.
+        run: google-chrome --version || chromium --version
+
+      # Two caches worth keeping between runs, both restored under one key:
+      #  · bike_route_cache.json — 26 areas x 7 campuses of real cycling routes
+      #    from a free community Valhalla instance. Cold, that's ~180 paced
+      #    requests taking ~2.5 min. The areas never move, so re-fetching them
+      #    every two hours would be rude and pointless.
+      #  · current_listings.json — the previous run's listings, which is what
+      #    new-listing diffing compares against. Without it every run would mark
+      #    all ~170 listings as NEW, since the runner starts empty each time.
+      - name: Restore scrape caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/bike_route_cache.json
+            data/current_listings.json
+          key: sshf-scrape-cache-
+          restore-keys: sshf-scrape-cache-
+
+      - name: Scrape SSSB + Bostadsförmedlingen
+        # Fails the job on a scrape error, on purpose: Pages keeps serving the
+        # previous deployment, which is much better than publishing an empty map.
+        run: python sssb_kth_monitor.py --once
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          cp sssb_kth_dashboard.html _site/index.html
+          python - <<'PY'
+          import json, os, pathlib
+          data = json.loads(pathlib.Path("data/current_listings.json").read_text())
+          # Lets the page say "updates every N hours" without the number being
+          # written down twice.
+          data["update_every_hours"] = int(os.environ["UPDATE_EVERY_HOURS"])
+          pathlib.Path("_site/listings.json").write_text(
+              json.dumps(data, ensure_ascii=False))
+          n = len(data["listings"])
+          by = {}
+          for l in data["listings"]:
+              by[l["provider"]] = by.get(l["provider"], 0) + 1
+          print(f"publishing {n} listings — {by}")
+          print(f"generated_at {data['generated_at']}")
+          print(f"new this run: {len(data.get('new_listing_ids') or [])}")
+          PY
+
+      - name: Save scrape caches
+        # Always a fresh key so the newest listings become the next run's
+        # comparison point; restore-keys above picks up whichever is latest.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/bike_route_cache.json
+            data/current_listings.json
+          key: sshf-scrape-cache-${{ github.run_id }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

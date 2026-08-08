@@ -14,9 +14,13 @@ Bostäder advertises its student apartments, and it needs no login at all
 included — so out of the box this asks for no credentials at all. There's a
 `--with-login` escape hatch if SSSB ever changes that; see section 3.
 
+**Live version:** [ivarhak.github.io/SSSB-Watch-KTH-](https://ivarhak.github.io/SSSB-Watch-KTH-/)
+— published from this repo and re-scraped every two hours. Read-only; run it
+locally for desktop notifications and an on-demand Refresh. See section 5.
+
 Two pieces:
 - `sssb_kth_monitor.py` — runs on your machine: Selenium scraping for SSSB, a plain HTTP fetch for Bostadsförmedlingen, commute math, and a small local API.
-- `sssb_kth_dashboard.html` — the UI. Served by the script itself, so it's all same-origin (no CORS headaches).
+- `sssb_kth_dashboard.html` — the UI. Served by the script itself locally, and published as-is to GitHub Pages, where it reads a pre-scraped `listings.json` instead of the API.
 
 ## 1. Why this runs on your laptop
 
@@ -192,7 +196,56 @@ a real browser, that run tells you so and prints any API-looking URLs it found
 in the page, since one of those is probably the endpoint the page fetches its
 listings from.
 
-## 5. Getting notified automatically
+## 5. The published version (GitHub Pages)
+
+There's a **live read-only copy** of the dashboard published from this repo, so
+you can look at current listings without running anything:
+
+> **https://ivarhak.github.io/SSSB-Watch-KTH-/**
+
+A GitHub Actions workflow (`.github/workflows/publish.yml`) scrapes both sources
+**every two hours**, writes the result next to the dashboard as `listings.json`,
+and deploys the pair to Pages. The page picks up a new scrape on its own — a tab
+left open re-checks the data file every 15 minutes.
+
+It's the **same `sssb_kth_dashboard.html`** as the local version, not a second
+copy to keep in sync. When no local server answers, it falls back to reading
+`./listings.json` and adjusts: the Refresh button disappears (there's no server
+to ask for a re-scrape) and a line in its place says how often the data updates
+and where it comes from. Everything else — map, filters, campus picker, search,
+both themes — works identically.
+
+What the published version can't do, by nature:
+
+- **No Refresh.** Re-scraping needs a token, and a token cannot live in a public
+  static page. The schedule is the refresh.
+- **No desktop notifications.** Those are the reason to run it locally.
+- **Freshness is approximate.** GitHub's scheduled workflows are best-effort and
+  commonly run 5–20 minutes late. Also note GitHub **disables cron workflows
+  after 60 days without repo activity** — it emails you first.
+
+<details>
+<summary>Setting it up on your own fork</summary>
+
+1. **Settings → Pages → Build and deployment → Source: GitHub Actions.** The
+   deploy step fails without this; it's the one manual step.
+2. Push. The workflow also runs on demand from the **Actions** tab
+   (`workflow_dispatch`), which is the quickest way to test it.
+3. The URL follows the repo name: `https://<user>.github.io/<repo>/`. Nothing in
+   the code hardcodes it — the dashboard fetches its data with a relative path
+   precisely so a project site served from a subpath works unchanged.
+
+The workflow caches two files between runs, both worth understanding:
+`bike_route_cache.json`, so 26 areas × 7 campuses of real cycling routes aren't
+re-fetched from a free community service every two hours; and
+`current_listings.json`, which is what new-listing diffing compares against —
+without it, every run would start from nothing and mark all ~170 listings as NEW.
+
+If a scrape fails the job fails deliberately, and Pages keeps serving the last
+good deploy rather than publishing an empty map.
+</details>
+
+## 6. Getting notified automatically
 
 If you leave `python sssb_kth_monitor.py --serve` running, you're already
 covered — its background auto-check (every 15 min by default) fires the
@@ -211,7 +264,7 @@ crontab -e
 `venv\Scripts\python.exe sssb_kth_monitor.py --once` every 30 minutes,
 with "Start in" set to this folder.
 
-## 6. Notes / known limitations
+## 7. Notes / known limitations
 
 - **Light and dark themes.** The toggle sits in the header next to the title;
   dark is the default. Everything the page draws — including the map's area
