@@ -2,39 +2,24 @@
 
 # Stockholm Student Housing Finder
 
-A local tool that checks what SSSB student housing is currently available,
-works out the commute to your campus for each area, and shows it all on a map —
-sorted by ascending queue days, with a refresh button and a desktop
-notification when something new gets published. It also pulls in Stockholm's
-**Bostadsförmedlingen** listings alongside SSSB's — that's where Svenska
-Bostäder advertises its student apartments, and it needs no login at all
-(it's a public JSON feed).
+A tool that checks what Stockholm student housing is currently available on either SSSB or Bostadsförmedlingens websites,
+works out the commute to your campus for each area, and shows it all on a combined map —
+sorted by whatever the user wants and updates every couple hours. It pulls in Stockholm's
+**Bostadsförmedlingen** listings alongside SSSB's. 
+Site never asks for login or any data.
+Ko-fi link available on site if you want to optionally support me as a dev :P
 
-**No SSSB login required either.** The vacancy list is public — queue days
-included — so out of the box this asks for no credentials at all. There's a
-`--with-login` escape hatch if SSSB ever changes that; see section 3.
 
 **Live version:** [ivarhak.github.io/Stockholm-Student-Housing-Finder](https://ivarhak.github.io/Stockholm-Student-Housing-Finder/)
 — published from this repo and re-scraped every two hours. Read-only; run it
-locally for desktop notifications and an on-demand Refresh. See section 5.
+locally for desktop notifications and an on-demand Refresh. See section 4.
 
 Two pieces:
 - `sssb_kth_monitor.py` — runs on your machine: Selenium scraping for SSSB, a plain HTTP fetch for Bostadsförmedlingen, commute math, and a small local API.
 - `sssb_kth_dashboard.html` — the UI. Served by the script itself locally, and published as-is to GitHub Pages, where it reads a pre-scraped `listings.json` instead of the API.
 
-## 1. Why this runs on your laptop
 
-It's a personal tool that watches your queues and pops desktop notifications,
-so it lives on your machine — no server to pay for, nothing to deploy. It also
-keeps Chrome available as a fallback for reading SSSB's listing page, which is
-rendered by their JavaScript app rather than served as plain HTML.
-
-This is deliberately a laptop tool. Running it on a phone was tried and
-abandoned: iOS suspends background processes, so the dashboard's local server
-dies the moment you switch to Safari, and working around that added more
-complexity than the convenience was worth.
-
-## 2. Setup
+## 1. Setup
 
 **Double-click `start.command`** (`start.bat` on Windows). That's it.
 
@@ -48,9 +33,6 @@ The only prerequisites are **Python 3.10+** and **Chrome** (or Chromium).
 `webdriver-manager` fetches the matching driver by itself. Chrome is only the
 fallback path for reading SSSB's listing page (see "How it reads SSSB" in
 section 4), but keep it installed so that fallback exists.
-
-There is no login step, and nothing ever prompts for input — so cron and Task
-Scheduler runs need nothing extra either.
 
 <details>
 <summary>Prefer to do it by hand, or run it from an IDE?</summary>
@@ -82,7 +64,7 @@ Cmd+I, and paste an image onto the small icon in the top-left of the Info window
 </details>
 
 <details>
-<summary>If SSSB ever starts requiring a login again</summary>
+<summary>If SSSB ever starts requiring a login again for showing vacant housing</summary>
 
 Pass `--with-login`, and store credentials first with:
 
@@ -117,7 +99,7 @@ add the "Resrobot v2.1" API), then:
 export RESROBOT_API_KEY="your key"
 ```
 
-## 3. If the scrape ever comes back empty
+## 2. If the scrape ever comes back empty
 
 `scrape_listings()` finds real listings by looking for links containing
 `refid=` in the URL (confirmed against a real SSSB booking link), then reads
@@ -144,7 +126,7 @@ markup. If its field names ever drift, the terminal prints the first ad's
 actual keys on every run, so you can fix the candidate names in `_bf_field()`
 from that alone.
 
-## 4. Running it
+## 3. Running it
 
 **Dashboard** — double-click `start.command`, or from a terminal:
 ```bash
@@ -178,8 +160,7 @@ python sssb_kth_monitor.py --once
 This one *does* exit non-zero if the scrape fails, since it's what cron runs and
 a silent success would be worse than a loud failure.
 
-> Opening `sssb_kth_dashboard.html` directly as a file (or previewing it in
-> Claude) shows example data with a banner saying so — the live version only
+> Opening the .html directly as a file  shows example data with a banner saying so — the live version only
 > works served from `http://localhost:5055` since that's what makes the
 > `/api/...` calls same-origin.
 
@@ -196,7 +177,7 @@ a real browser, that run tells you so and prints any API-looking URLs it found
 in the page, since one of those is probably the endpoint the page fetches its
 listings from.
 
-## 5. The published version (GitHub Pages)
+## 4. The published version (GitHub Pages)
 
 There's a **live read-only copy** of the dashboard published from this repo, so
 you can look at current listings without running anything:
@@ -208,7 +189,7 @@ A GitHub Actions workflow (`.github/workflows/publish.yml`) scrapes both sources
 and deploys the pair to Pages. The page picks up a new scrape on its own — a tab
 left open re-checks the data file every 15 minutes.
 
-It's the **same `sssb_kth_dashboard.html`** as the local version, not a second
+It's the **same .html as the local version, not a second
 copy to keep in sync. When no local server answers, it falls back to reading
 `./listings.json` and adjusts: the Refresh button disappears (there's no server
 to ask for a re-scrape) and a line in its place says how often the data updates
@@ -224,16 +205,7 @@ What the published version can't do, by nature:
   commonly run 5–20 minutes late. Also note GitHub **disables cron workflows
   after 60 days without repo activity** — it emails you first.
 
-<details>
-<summary>Setting it up on your own fork</summary>
 
-1. **Settings → Pages → Build and deployment → Source: GitHub Actions.** The
-   deploy step fails without this; it's the one manual step.
-2. Push. The workflow also runs on demand from the **Actions** tab
-   (`workflow_dispatch`), which is the quickest way to test it.
-3. The URL follows the repo name: `https://<user>.github.io/<repo>/`. Nothing in
-   the code hardcodes it — the dashboard fetches its data with a relative path
-   precisely so a project site served from a subpath works unchanged.
 
 The workflow caches two files between runs, both worth understanding:
 `bike_route_cache.json`, so 26 areas × 7 campuses of real cycling routes aren't
@@ -427,4 +399,4 @@ all of them permissive but worth knowing if you fork this:
   pages for personal use and links every listing back to the source — it isn't
   affiliated with either, and you apply through them.
 
-Made by IvarHak on GitHub with the help of Claude Code
+Made by IvarHak, hosted on GitHub, coded partially with the help of Claude Code
