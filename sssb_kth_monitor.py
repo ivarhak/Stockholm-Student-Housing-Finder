@@ -1679,7 +1679,14 @@ def serve(interval_minutes: float, use_login: bool = False,
             except ValueError:
                 pass
         return jsonify({"generated_at": generated_at,
-                        "poll_interval_min": interval_minutes})
+                        "poll_interval_min": interval_minutes,
+                        # Whether a scrape is running right now, so the dashboard
+                        # can disable its Refresh button honestly. Client-side
+                        # state alone isn't enough for two real cases: reloading
+                        # the page mid-refresh, and the *background* auto-check —
+                        # clicking Refresh during either just queues behind
+                        # `_scrape_lock` for a minute with nothing to show for it.
+                        "scraping": _scrape_lock.locked()})
 
     @app.route("/api/refresh", methods=["POST"])
     def api_refresh():

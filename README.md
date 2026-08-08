@@ -155,6 +155,14 @@ need to click anything for it to notice new listings — you'll just see them
 appear, plus the desktop notification. "Refresh" still triggers an immediate
 check on demand instead of waiting for the next scheduled one.
 
+While a check is running, **Refresh goes grey and tells you so**, with a running
+timer under the button, and stays unclickable until it finishes. Clicking it
+again wouldn't have made anything happen faster — scrapes run one at a time, so a
+second click just queued up another full one behind the first. The page updates
+itself the moment the data lands, so there's nothing to click. The same applies
+while the background auto-check is running, and it survives reloading the page
+mid-check.
+
 If that startup scrape fails — SSSB briefly down, no network, Chrome missing —
 the dashboard still comes up and serves the last listings it saved, and says in
 the terminal what went wrong. The background auto-check retries on its own.

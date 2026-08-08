@@ -84,7 +84,11 @@
     background:var(--panel);
     border-bottom:1px solid var(--rule);
     flex-wrap:wrap;
-    z-index:10;
+    /* Positioned so the z-index actually applies: it has to beat Leaflet's
+       panes, which reach z-index 800 for map controls and share the root
+       stacking context. Without this the refresh note renders under the map. */
+    position:relative;
+    z-index:1000;
   }
   .brand{
     display:flex;
@@ -184,6 +188,7 @@
     background:var(--panel);
     border-bottom:1px solid var(--rule);
     flex-wrap:wrap;
+    position:relative;
     z-index:8;
   }
 
@@ -223,6 +228,7 @@
     padding:9px 16px 11px;
     background:var(--card);
     border-bottom:1px solid var(--rule);
+    position:relative;
     z-index:7;
   }
   #advFilters.open{display:flex;}
@@ -308,6 +314,49 @@
   #refreshBtn:active{transform:scale(0.97);}
   #refreshBtn.spinning svg{animation:spin 0.9s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
+  /* Disabled while a scrape runs. Kept the ochre fill rather than greying out:
+     it isn't unavailable, it's busy, and the spinner already says so. */
+  #refreshBtn:disabled{
+    cursor:progress;
+    opacity:0.72;
+  }
+  #refreshBtn:disabled:hover{filter:none;}
+  #refreshBtn:disabled:active{transform:none;}
+
+  .refresh-wrap{position:relative;}
+  #refreshNote{
+    position:absolute;
+    top:calc(100% + 8px);
+    right:0;
+    z-index:1;
+    width:max-content;
+    max-width:270px;
+    font-family:var(--mono);
+    font-size:10.5px;
+    line-height:1.5;
+    letter-spacing:0.02em;
+    color:var(--ink);
+    background:var(--card);
+    border:1px solid var(--ochre);
+    border-radius:3px;
+    padding:8px 10px;
+    box-shadow:0 4px 14px rgba(0,0,0,0.28);
+    text-align:left;
+  }
+  #refreshNote[hidden]{display:none;}
+  /* Little pointer up at the button. */
+  #refreshNote::before{
+    content:'';
+    position:absolute;
+    top:-4px;right:16px;
+    width:6px;height:6px;
+    background:var(--card);
+    border-left:1px solid var(--ochre);
+    border-top:1px solid var(--ochre);
+    transform:rotate(45deg);
+  }
+  #refreshNote b{color:var(--ochre);font-weight:600;}
+  #refreshNote .elapsed{font-variant-numeric:tabular-nums;}
 
   #meta{
     font-family:var(--mono);
@@ -562,13 +611,19 @@
     All listings
   </button>
 
-  <button id="refreshBtn">
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-      <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke-linecap="round"/>
-      <path d="M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    Refresh
-  </button>
+  <!-- The note hangs below the button while a scrape is running. Anchored to a
+       wrapper rather than dropped in the header flow so it can't reflow the row
+       (which wraps at laptop widths) every time it appears. -->
+  <div class="refresh-wrap">
+    <button id="refreshBtn">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke-linecap="round"/>
+        <path d="M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span id="refreshLabel">Refresh</span>
+    </button>
+    <div id="refreshNote" role="status" aria-live="polite" hidden></div>
+  </div>
 
 </header>
 
@@ -867,9 +922,63 @@ function showBanner(text){
   b.style.display = 'block';
 }
 
-async function loadData(triggerRefresh){
+// ---- refreshing state ----
+// A scrape takes roughly a minute (longer on a cold bike-route cache), and the
+// server serialises them behind one lock. So while one is running the Refresh
+// button is disabled and says so: a second click would otherwise just queue up
+// another full scrape behind the first, doubling the wait for no new data.
+let refreshStartedAt = null;
+let refreshTicker = null;
+// True only while *this tab's* /api/refresh POST is outstanding, which is what
+// distinguishes "you asked for this" from "the background auto-check is busy".
+let myRefreshInFlight = false;
+
+function elapsedText(){
+  if (!refreshStartedAt) return '';
+  const s = Math.max(0, Math.round((Date.now() - refreshStartedAt) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function paintRefreshNote(mine){
+  const note = document.getElementById('refreshNote');
+  // "mine" = this tab asked for it. If not, all we know from /api/status is that
+  // *something* is scraping — the background auto-check, or another open tab —
+  // so the wording stays true for both rather than naming one.
+  note.innerHTML =
+    `<b>${mine ? 'Refreshing both sites' : 'A check is already running'}</b> · `
+    + `<span class="elapsed">${elapsedText()}</span><br>`
+    + 'Usually about a minute. The page updates itself when it finishes — '
+    + 'no need to click again.';
+}
+
+function setRefreshing(on, mine){
   const btn = document.getElementById('refreshBtn');
-  if (triggerRefresh) btn.classList.add('spinning');
+  const note = document.getElementById('refreshNote');
+  const label = document.getElementById('refreshLabel');
+
+  if (on) {
+    if (refreshStartedAt === null) refreshStartedAt = Date.now();
+    btn.disabled = true;
+    btn.classList.add('spinning');
+    label.textContent = mine ? 'Refreshing…' : 'Checking…';
+    note.hidden = false;
+    paintRefreshNote(mine);
+    if (!refreshTicker) refreshTicker = setInterval(() => paintRefreshNote(mine), 1000);
+  } else {
+    refreshStartedAt = null;
+    if (refreshTicker) { clearInterval(refreshTicker); refreshTicker = null; }
+    btn.disabled = false;
+    btn.classList.remove('spinning');
+    label.textContent = 'Refresh';
+    note.hidden = true;
+  }
+}
+
+async function loadData(triggerRefresh){
+  if (triggerRefresh) {
+    myRefreshInFlight = true;
+    setRefreshing(true, true);
+  }
   try {
     const url = triggerRefresh ? '/api/refresh' : '/api/listings';
     const res = await fetch(url, { method: triggerRefresh ? 'POST' : 'GET' });
@@ -880,7 +989,10 @@ async function loadData(triggerRefresh){
     showBanner('Showing example data — start the local server (python sssb_kth_monitor.py --serve) and open http://localhost:5055 for live listings.');
   }
   lastGeneratedAt = currentData.generated_at;
-  btn.classList.remove('spinning');
+  if (triggerRefresh) {
+    myRefreshInFlight = false;
+    setRefreshing(false);
+  }
   render();
 }
 
@@ -1456,7 +1568,13 @@ document.getElementById('themeToggle').addEventListener('click', () => {
   try { localStorage.setItem('sshf-theme', currentTheme); } catch (e) {}
 });
 
-document.getElementById('refreshBtn').addEventListener('click', () => loadData(true));
+document.getElementById('refreshBtn').addEventListener('click', () => {
+  // A disabled button doesn't dispatch clicks, so this is belt-and-braces —
+  // but it also covers the case where the server is mid-scrape and this tab
+  // learned about it from the status poll rather than from its own request.
+  if (myRefreshInFlight || serverScraping) return;
+  loadData(true);
+});
 document.getElementById('browseAllBtn').addEventListener('click', toggleBrowseAll);
 
 initMap();
@@ -1471,19 +1589,40 @@ loadData(false);
 // The check itself asks /api/status (a timestamp, tens of bytes) and only pulls
 // the full ~100 KB payload and re-renders when that timestamp actually moves.
 // Neither triggers a scrape.
+let serverScraping = false;
+
 async function pollForChanges(){
   try {
     const res = await fetch('/api/status');
     if (!res.ok) return;
-    const { generated_at } = await res.json();
+    const { generated_at, scraping } = await res.json();
+    serverScraping = !!scraping;
+    // While our own POST is in flight it owns the button — that request
+    // resolving is the authoritative "done". Otherwise mirror the server, which
+    // covers the two cases client state can't: reloading the page mid-scrape,
+    // and the background auto-check running on its own schedule.
+    if (!myRefreshInFlight) setRefreshing(serverScraping, false);
     if (generated_at && generated_at !== lastGeneratedAt) loadData(false);
   } catch (e) {
     // Server stopped, or this file was opened standalone. Keep showing what's
     // already on screen — a failed poll must never replace live listings with
-    // the demo set.
+    // the demo set. Leave the button alone too: guessing "not scraping" here
+    // would re-enable it on a blip.
   }
 }
-setInterval(pollForChanges, 60000);
+
+// Self-scheduling rather than a fixed interval: 60s is right when nothing is
+// happening, but while a scrape runs it's the difference between the note
+// clearing promptly and lingering for up to a minute after the data lands.
+function scheduleNextPoll(){
+  setTimeout(async () => {
+    await pollForChanges();
+    scheduleNextPoll();
+  }, (serverScraping || myRefreshInFlight) ? 3000 : 60000);
+}
+// Run one immediately so a page loaded mid-scrape shows the right button state
+// straight away instead of up to a minute later.
+pollForChanges().then(scheduleNextPoll);
 </script>
 </body>
 </html>
