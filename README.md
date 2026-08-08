@@ -14,7 +14,7 @@ Bostäder advertises its student apartments, and it needs no login at all
 included — so out of the box this asks for no credentials at all. There's a
 `--with-login` escape hatch if SSSB ever changes that; see section 3.
 
-**Live version:** [ivarhak.github.io/SSSB-Watch-KTH-](https://ivarhak.github.io/SSSB-Watch-KTH-/)
+**Live version:** [ivarhak.github.io/Stockholm-Student-Housing-Finder](https://ivarhak.github.io/Stockholm-Student-Housing-Finder/)
 — published from this repo and re-scraped every two hours. Read-only; run it
 locally for desktop notifications and an on-demand Refresh. See section 5.
 
@@ -201,7 +201,7 @@ listings from.
 There's a **live read-only copy** of the dashboard published from this repo, so
 you can look at current listings without running anything:
 
-> **https://ivarhak.github.io/SSSB-Watch-KTH-/**
+> **https://ivarhak.github.io/Stockholm-Student-Housing-Finder/**
 
 A GitHub Actions workflow (`.github/workflows/publish.yml`) scrapes both sources
 **every two hours**, writes the result next to the dashboard as `listings.json`,
