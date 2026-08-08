@@ -76,7 +76,16 @@ jobs:
       - name: Scrape SSSB + Bostadsförmedlingen
         # Fails the job on a scrape error, on purpose: Pages keeps serving the
         # previous deployment, which is much better than publishing an empty map.
-        run: python sssb_kth_monitor.py --once
+        #
+        # A push that only touched the dashboard doesn't need fresh listings — it
+        # needs the new UI deployed against the listings we already have. Hitting
+        # SSSB again for that would be a scrape nobody asked for.
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ -f data/current_listings.json ]; then
+            echo "UI-only push, and the cache already has listings — redeploying without scraping."
+          else
+            python sssb_kth_monitor.py --once
+          fi
 
       - name: Assemble the site
         run: |
@@ -103,6 +112,8 @@ jobs:
         # Always a fresh key so the newest listings become the next run's
         # comparison point; restore-keys above picks up whichever is latest.
         if: always()
+        # A cache hiccup must never turn an otherwise good publish into a failure.
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: |
