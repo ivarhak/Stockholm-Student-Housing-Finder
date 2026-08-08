@@ -46,9 +46,6 @@ fi
 if [ ! -d "$VENV" ]; then
   say "First run — creating a virtual environment in ./$VENV"
   "$PY" -m venv "$VENV"
-  # A venv from an old Python can ship a pip too old for the current
-  # interpreter (this bit once: pip using pkgutil.ImpImporter, removed in 3.12).
-  "$VENV/bin/python" -m pip install --quiet --upgrade pip
 fi
 
 # ── 3. dependencies ─────────────────────────────────────────────────────
@@ -57,6 +54,14 @@ fi
 WANT="$(cksum requirements.txt | awk '{print $1, $2}')"
 if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$WANT" ]; then
   say "Installing dependencies (once — this takes a minute)"
+  # Upgrade pip first, every time we're about to install rather than only on a
+  # venv we just made. A venv built by an older Python (or by an IDE) can carry
+  # a pip too old for the interpreter it's running under, which fails with
+  # "module 'pkgutil' has no attribute 'ImpImporter'" — pip's own code using
+  # something removed in Python 3.12. That's a confirmed failure on a real venv
+  # here, and it's the one error that would greet someone who already had a
+  # venv before this launcher existed. Cheap: this block almost never runs.
+  "$VENV/bin/python" -m pip install --quiet --upgrade pip
   "$VENV/bin/python" -m pip install --quiet -r requirements.txt
   printf '%s' "$WANT" > "$STAMP"
 fi

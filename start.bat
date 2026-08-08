@@ -21,7 +21,6 @@ if errorlevel 1 (
 if not exist "%VENV%" (
   echo First run - creating a virtual environment in .\%VENV%
   %PY% -m venv "%VENV%" || (pause & exit /b 1)
-  "%VENV%\Scripts\python.exe" -m pip install --quiet --upgrade pip
 )
 
 rem Reinstall only when requirements.txt actually changes.
@@ -30,6 +29,9 @@ set HAVE=
 if exist "%STAMP%" set /p HAVE=<"%STAMP%"
 if not "%HAVE%"=="%WANT%" (
   echo Installing dependencies ^(once - this takes a minute^)
+  rem Upgrade pip first: a venv made by an older Python or by an IDE can carry a
+  rem pip too old for the interpreter running it, which fails on pkgutil.ImpImporter.
+  "%VENV%\Scripts\python.exe" -m pip install --quiet --upgrade pip
   "%VENV%\Scripts\python.exe" -m pip install --quiet -r requirements.txt || (pause & exit /b 1)
   >"%STAMP%" echo %WANT%
 )
