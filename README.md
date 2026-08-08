@@ -406,5 +406,25 @@ with "Start in" set to this folder.
   register for each queue.
 
 
+## License
+
+MIT — see [LICENSE](LICENSE). Feel free to use or modify however.
+
+That covers the code in this repo. The things it builds on have their own terms,
+all of them permissive but worth knowing if you fork this:
+
+- **Map data** is © OpenStreetMap contributors, under the
+  [ODbL](https://www.openstreetmap.org/copyright) — that's the basemap *and* the
+  grocery-store locations. Attribution is required, which is why the map credits
+  it in the corner; don't remove that.
+- **Basemap tiles** are CARTO's ([attributions](https://carto.com/attributions)).
+- **Routing** is FOSSGIS's public Valhalla instance and **geocoding** is
+  Nominatim — both free community services, which is why this caches
+  aggressively and paces its requests. Please don't remove the caching.
+- **Leaflet** is BSD-2-Clause; **Familjen Grotesk** and **JetBrains Mono** are
+  open fonts (OFL / Apache-2.0).
+- **Listing data** belongs to SSSB and Stockholms Stad. This reads their public
+  pages for personal use and links every listing back to the source — it isn't
+  affiliated with either, and you apply through them.
+
 Made by IvarHak on GitHub with the help of Claude Code
-Feel free to use or modify however

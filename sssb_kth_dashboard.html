@@ -292,6 +292,11 @@
   .legend button:hover{border-color:var(--leaf);}
   .legend button .sw{width:8px;height:8px;}
   .legend button.off{opacity:0.35;}
+  /* `.legend button{display:flex}` beats the user agent's `[hidden]{display:none}`,
+     so hiding a chip needs saying explicitly — otherwise the Shops chip stays
+     clickable against data with no grocery list (an older saved file, or a failed
+     lookup) and toggles a layer that isn't there. */
+  .legend button[hidden]{display:none;}
   .legend button[data-g="North"] .sw{background:var(--slate);}
   .legend button[data-g="South"] .sw{background:var(--clay);}
   .legend button[data-g="City"] .sw{background:var(--leaf);}
@@ -426,6 +431,23 @@
     filter:saturate(1.25) contrast(1.05) sepia(0.12);
   }
   .leaflet-container{background:var(--bg);font-family:var(--mono);}
+  /* Attribution is an obligation, so it stays — but small, muted and out of the
+     way. The tile filter doesn't touch it: it lives in the control pane, not the
+     tile pane. */
+  /* Two class selectors to match Leaflet's own
+     `.leaflet-container .leaflet-control-attribution`, which sets a hardcoded
+     white background — a single-class rule loses to it and leaves a white box
+     in the corner of the dark theme. */
+  .leaflet-container .leaflet-control-attribution{
+    font-family:var(--mono);
+    font-size:9px;
+    background:var(--panel);
+    color:var(--dim);
+    padding:1px 6px;
+    border-radius:2px 0 0 0;
+    opacity:0.85;
+  }
+  .leaflet-container .leaflet-control-attribution a{color:var(--teal);text-decoration:none;}
 
   #sidebar{
     width:340px;
@@ -1255,7 +1277,7 @@ function sssbListingsInArea(name){
 
 let leafletMap;
 function initMap(){
-  leafletMap = L.map('map', { zoomControl:true, attributionControl:false }).setView(centre(), 12);
+  leafletMap = L.map('map', { zoomControl:true }).setView(centre(), 12);
   // Canvas for the grocery dots ONLY, as an explicit per-layer renderer rather
   // than the map-wide `preferCanvas` flag. Global canvas would also move the
   // polylines off SVG, and the dashed area→campus line is coloured by CSS class
@@ -1264,7 +1286,12 @@ function initMap(){
   // canvas element, polylines still styleable from CSS.
   groceryRenderer = L.canvas({ padding: 0.5 });
   L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    maxZoom: 18
+    maxZoom: 18,
+    // Required, not decorative: CARTO's terms ask for it, and the shop dots are
+    // OSM-derived data under ODbL, which requires attribution. Styled small and
+    // muted below rather than switched off.
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> &middot; ' +
+                 '&copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
   }).addTo(leafletMap);
 
   METRO_LINES.forEach(line => {
