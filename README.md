@@ -32,7 +32,7 @@ steps is skipped once it's been done, so every run after the first is just
 The only prerequisites are **Python 3.10+** and **Chrome** (or Chromium).
 `webdriver-manager` fetches the matching driver by itself. Chrome is only the
 fallback path for reading SSSB's listing page (see "How it reads SSSB" in
-section 4), but keep it installed so that fallback exists.
+section 3), but keep it installed so that fallback exists.
 
 <details>
 <summary>Prefer to do it by hand, or run it from an IDE?</summary>
@@ -217,7 +217,7 @@ If a scrape fails the job fails deliberately, and Pages keeps serving the last
 good deploy rather than publishing an empty map.
 </details>
 
-## 6. Getting notified automatically
+## 5. Getting notified automatically
 
 If you leave `python sssb_kth_monitor.py --serve` running, you're already
 covered — its background auto-check (every 15 min by default) fires the
@@ -236,7 +236,7 @@ crontab -e
 `venv\Scripts\python.exe sssb_kth_monitor.py --once` every 30 minutes,
 with "Start in" set to this folder.
 
-## 7. Notes / known limitations
+## 6. Notes / known limitations
 
 - **Light and dark themes.** The toggle sits in the header next to the title;
   dark is the default. Everything the page draws — including the map's area
