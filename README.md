@@ -266,10 +266,11 @@ with "Start in" set to this folder.
   dropped that way so you can correct it in the cache file by hand.
 - **Chain supermarkets on the map.** The **Shops** chip (next to the provider
   chips) draws a dot for every ICA, Coop, Willys, Hemköp, Lidl and City Gross in
-  greater Stockholm, from OpenStreetMap. Off by default, and only drawn from zoom
+  greater Stockholm, from OpenStreetMap. On by default, but only drawn from zoom
   13 in — at city zoom a few hundred dots bury the area roundels, which are the
-  point of the map. The chip goes dashed when it's on but you're zoomed too far
-  out, so nothing looks broken.
+  point of the map. So they cost nothing until you zoom into somewhere, and then
+  they're already there. The chip goes dashed when it's on but you're zoomed too
+  far out, so nothing looks broken; click it to turn them off entirely.
   Every area also gets a **nearest shop** figure computed at scrape time, shown
   in the area's gauges and on rows in the cross-area list. It's straight-line
   distance, like the distance gauge next to it — a 300 m crow-flies shop can
@@ -291,7 +292,14 @@ with "Start in" set to this folder.
 - **Area colours match the tunnelbana.** A roundel's colour is the line its
   area sits on — North blue, South red, City green — matching the three lines
   drawn on the map in official SL colours. Gray × means an area exists but has
-  nothing available (or nothing matching your filters) right now.
+  nothing available (or nothing matching your filters) right now. The
+  **SSSB lines** chips filter by those same three groups, which are SSSB's own
+  grouping of its areas rather than anything invented here.
+- **Works on a phone.** Below 760px wide (or on a short landscape screen) the
+  two-pane layout stacks into one scrolling page: map first, then the filters,
+  then the listings. The filter strip becomes two columns with full-width
+  sliders. It's a CSS-only change confined to one media query at the end of the
+  stylesheet — the desktop layout renders pixel-for-pixel as it did before.
 - **First run scrapes before serving.** `--serve` scrapes on startup unless the
   saved listings are newer than your `--interval`, and prints which it's doing.
   `data/current_listings.json` is regenerated output and deliberately *not* in

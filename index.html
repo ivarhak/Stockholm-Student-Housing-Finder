@@ -655,6 +655,115 @@
   .route-line.route-North{stroke:var(--slate);}
   .route-line.route-South{stroke:var(--clay);}
   .route-line.route-City{stroke:var(--leaf);}
+
+  /* ── Phones ──────────────────────────────────────────────
+     Everything mobile lives in this one block, at the end of the sheet, so the
+     desktop layout above is reached by exactly the rules it always was — a real
+     desktop window never matches either query below, and renders
+     pixel-for-pixel as it did before this block existed.
+
+     The desktop layout is a fixed-height app shell: `body` doesn't scroll, and
+     `main` is a flex row where the map fills what's left beside a 340px
+     sidebar. On a phone that arithmetic collapses — a 340px sidebar next to a
+     390px viewport leaves the map about 50px wide, and at 360px it came out
+     20px by *zero*. Both panes were unusable.
+
+     So on a phone it stops being an app shell and becomes an ordinary scrolling
+     page: header, filters, a fixed-height map, then the listings below it. That
+     means block flow rather than flex, deliberately — with `flex:1` and
+     `min-height:0` still applied, an auto-height flex column gives its children
+     a flex base of zero and no free space to grow into, so both the map and the
+     sidebar collapse to nothing. Block flow has no such trap, and it needs no
+     JavaScript: Leaflet's own resize tracking handles the rotation case.
+
+     The second query is a phone in landscape, which is *wider* than 760px and so
+     kept the desktop shell: 207px of header and filters out of 390px of height,
+     leaving a 183px map inside a page that can't scroll. Short-and-not-wide is a
+     rotated phone, not a desktop — a browser window that shape would want this
+     layout too. */
+  @media (max-width: 760px), (max-height: 430px) and (max-width: 900px){
+    html,body{height:auto;}
+    body{display:block; overflow:visible;}
+    main{display:block;}
+
+    /* Stays a flex column purely so the map can be re-ordered above the filter
+       strip; every child has a definite or content height and nothing grows, so
+       there's no free space to fight over and no collapse. */
+    .map-col{display:flex; flex-direction:column;}
+
+    /* Map first. Stacked in DOM order the filter strip pushed it 500px down the
+       page, so a map-centred tool opened on a screen of controls. Above them it
+       is visible immediately, and the filters end up directly above the list
+       they narrow.
+       Enough map to be worth having, and it scrolls away when you want the
+       list. `vh` rather than a fixed pixel height so a small phone in
+       landscape doesn't hand the whole screen to the map. */
+    #map{order:-1; flex:0 0 auto; height:58vh; min-height:260px;}
+
+    #sidebar{
+      width:auto;
+      border-left:none;
+      border-top:1px solid var(--rule);
+      /* The page is the scroller now, so a nested one here would trap the
+         list inside a short box and give it its own scrollbar. */
+      overflow:visible;
+      padding-bottom:28px;
+    }
+
+    /* Header: title on its own line, controls under it, timestamps last. Left
+       aligned, since a right-aligned column of small print reads badly when
+       it's the full width of the screen rather than tucked in a corner. */
+    header{gap:9px 12px; padding:12px 14px;}
+    .brand{flex-basis:100%;}
+    .brand .mark{width:24px;height:24px;}
+    .brand h1{font-size:15px;}
+    .brand .sub{font-size:9.5px;line-height:1.45;}
+    #meta{flex-basis:100%; text-align:left;}
+    #sourceNote{max-width:none;}
+
+    /* Two columns beats wrapping: the desktop strip wraps into a single 50px
+       column at this width, stacking labels on top of each other.
+
+       `minmax(0,1fr)` rather than `1fr`, which is not a detail — a bare `1fr`
+       floors each column at its content's min-content width, and a range input
+       reports ~130px of intrinsic width no matter what `min-width` says. That
+       made the two columns 181px each and pushed the whole strip 30px past a
+       360px screen. minmax(0,…) lets them actually be half the width. */
+    #filterBar{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+      align-items:start;
+      gap:11px 14px;
+      padding:11px 14px;
+    }
+    #advFilters.open{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+      align-items:start;
+      gap:11px 14px;
+    }
+    /* Lets the column actually shrink its contents, rather than the label and
+       slider row setting their own floor. */
+    #filterBar .control, #advFilters .control{min-width:0;}
+    /* Chip rows and prose want the full width; grid cells would break them
+       mid-word. */
+    .control-wide,
+    #advFilters .adv-hint,
+    #advReset{grid-column:1 / -1;}
+    #advFilters .adv-hint{max-width:none; margin-left:0;}
+    #advReset{justify-self:start;}
+    #schoolSelect{max-width:none;}
+
+    /* Fill the column rather than sitting at a fixed 76px: a wider track is
+       the difference between a draggable thumb and a fiddly one on a
+       touchscreen. */
+    .slider-row input[type=range]{flex:1; min-width:0; width:auto; height:22px;}
+    .slider-row span{min-width:40px;}
+
+    /* Comfortable touch targets. The desktop sizes are mouse-sized. */
+    .legend button{padding:7px 12px;}
+    #advToggle{width:36px;height:36px;}
+  }
 </style>
 </head>
 <body>
@@ -771,17 +880,20 @@
       </button>
     </div>
 
-    <div class="control">
+    <!-- `control-wide` is inert on desktop and only used by the mobile media
+         query, where the filter strip becomes a two-column grid and these two
+         rows of chips need to span both columns. -->
+    <div class="control control-wide">
       <label>Provider</label>
       <div class="legend" id="providerChips">
         <button data-p="SSSB"><span class="sw"></span>SSSB</button>
         <button data-p="Bostadsförmedlingen"><span class="sw"></span>Bostadsförm.</button>
-        <button id="groceryChip" class="off" hidden
-                title="Show chain supermarkets on the map"><span class="sw"></span>Shops</button>
+        <button id="groceryChip" hidden
+                title="Hide chain supermarkets"><span class="sw"></span>Shops</button>
       </div>
     </div>
 
-    <div class="control">
+    <div class="control control-wide">
       <label>SSSB lines</label>
       <div class="legend" id="legend">
         <button data-g="North"><span class="sw"></span>North</button>
@@ -1376,7 +1488,11 @@ function cssVar(name){
 // a few hundred of them in that loop would make the sliders feel sticky for no
 // reason. Built once, then only shown or hidden.
 let groceryLayer = null;
-let showGroceries = false;
+// On by default. The dots are hidden below GROCERY_MIN_ZOOM anyway, so this
+// costs nothing at city zoom and means "where can I buy food near here" is
+// answered the moment you zoom into somewhere — rather than depending on
+// noticing the chip. The chip still turns them off.
+let showGroceries = true;
 let groceryDrawnCount = -1;
 let groceryRenderer = null;
 // Which areas were drawn as dots last time, so a zoom that doesn't change the
