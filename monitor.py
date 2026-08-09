@@ -44,6 +44,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -347,6 +348,12 @@ def geocode_area(name: str, cache: dict) -> tuple | None:
 
 ADDRESS_CACHE_FILE = DATA_DIR / "address_cache.json"
 
+# How far a building may sit from its own area's centre before we stop believing
+# the geocoder. Every SSSB area is a campus-sized cluster — the widest,
+# Lappkärrsberget, is about a kilometre across — so 3 km is generous for a real
+# address and nowhere near a same-name street in another municipality.
+MAX_ADDRESS_OFFSET_M = 3000
+
 
 def _load_address_cache() -> dict:
     if ADDRESS_CACHE_FILE.exists():
@@ -403,6 +410,26 @@ def geocode_listing_address(address: str, area: str, cache: dict) -> list | None
     return coords
 
 
+def drop_misplaced_addresses(listings: list, area_info: dict) -> dict:
+    """Blank out any listing whose geocoded building sits implausibly far from its
+    own area, and return {address: (area, metres_off)} for the ones dropped.
+
+    Mutates `listings` in place, setting `coords` back to None — which is the
+    "we don't know the building" value, so the listing falls back to the area
+    centre exactly as it did before per-building dots existed.
+    """
+    misplaced = {}
+    for l in listings:
+        centre = (area_info.get(l.get("area")) or {}).get("coords")
+        if not (l.get("coords") and centre):
+            continue
+        off_m = haversine_km(tuple(l["coords"]), tuple(centre)) * 1000
+        if off_m > MAX_ADDRESS_OFFSET_M:
+            misplaced[l.get("address")] = (l.get("area"), off_m)
+            l["coords"] = None
+    return misplaced
+
+
 def area_spread_m(coords_list: list) -> int:
     """How far apart an area's listings actually are — the widest gap between any
     two of them, in metres.
@@ -432,10 +459,15 @@ def area_spread_m(coords_list: list) -> int:
 # loaded and routinely answers 429/504 at busy times, which is the difference
 # between the map having shop dots and not — so don't depend on a single mirror.
 # Same approach as BF_ALL_ADS_URLS. OVERPASS_URL overrides and is tried first.
+#
+# kumi.systems is first deliberately, not overpass-api.de. It runs a mirror
+# specifically so that automated callers stop hammering the main instance, and
+# that instance is the one whose rate limiting we keep losing to. Sparing it is
+# both politer and likelier to work.
 OVERPASS_URLS = [u for u in (
     os.environ.get("OVERPASS_URL"),
-    "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 ) if u]
 # Greater Stockholm, comfortably covering every SSSB area and the BF ads —
@@ -454,6 +486,11 @@ GROCERY_CHAINS = {
     "Lidl": ("lidl",),
     "City Gross": ("city gross", "citygross"),
 }
+
+
+def _host(url: str) -> str:
+    """Just the hostname, for a summary line that has to stay one line."""
+    return urlsplit(url).netloc or url
 
 
 def _grocery_chain(*names) -> str | None:
@@ -499,15 +536,21 @@ def _load_grocery_cache() -> tuple[list | None, bool]:
     return stores, True
 
 
-def fetch_grocery_stores() -> list[dict]:
-    """Chain supermarkets in greater Stockholm, as [{name, chain, coords}].
+def fetch_grocery_stores() -> tuple[list[dict], list[str]]:
+    """Chain supermarkets in greater Stockholm, as ([{name, chain, coords}], notes).
 
     Never fatal: the map is perfectly usable without shop dots, so any failure
     degrades to an empty list with a printed reason rather than stopping a scrape.
+
+    `notes` is a one-line-per-endpoint account of how the list was obtained, so
+    the caller can repeat it in the run summary. That exists because this runs at
+    the very start of a scrape: in an Actions log the reason ends up ~600 lines
+    above the end, and a run that shipped no shops read as a normal green build.
     """
     cached, fresh = _load_grocery_cache()
     if fresh:
-        return cached
+        return cached, [f"{len(cached)} from the on-disk cache"]
+    notes = []
 
     south, west, north, east = GROCERY_BBOX
     bbox = f"{south},{west},{north},{east}"
@@ -535,10 +578,12 @@ out center tags;
             resp.raise_for_status()
             elements = resp.json().get("elements", [])
             print(f"  · {url} → OK ({len(elements)} element(s))")
+            notes.append(f"{_host(url)} → OK")
             break
         except (requests.RequestException, ValueError) as e:
             reason = getattr(getattr(e, "response", None), "status_code", None) or type(e).__name__
             print(f"  · {url} → {reason}")
+            notes.append(f"{_host(url)} → {reason}")
 
     if elements is None:
         # Every mirror refused. Routine enough at busy times that it must not cost
@@ -546,10 +591,10 @@ out center tags;
         print("  ! no Overpass endpoint answered")
         if cached:
             print(f"    falling back to {len(cached)} store(s) from the stale cache")
-            return cached
+            return cached, notes + [f"kept {len(cached)} from the stale cache"]
         print("    and no cache to fall back on — the map's Shops toggle will be\n"
               "    hidden this run. Try again later, or set OVERPASS_URL=<mirror>.")
-        return []
+        return [], notes + ["no cache to fall back on"]
 
     stores, skipped, no_coords = [], 0, 0
     for el in elements:
@@ -582,15 +627,15 @@ out center tags;
         GROCERY_CACHE_FILE.write_text(json.dumps(
             {"fetched_at": datetime.now(timezone.utc).isoformat(), "stores": stores},
             ensure_ascii=False, indent=1))
-        return stores
+        return stores, notes
 
     # Answered, but with nothing usable — a changed tag scheme, or a truncated
     # response. Same reasoning as a failed request: keep what we had.
     print("  ! the response contained no chain supermarkets at all")
     if cached:
         print(f"    keeping {len(cached)} store(s) from the previous lookup")
-        return cached
-    return []
+        return cached, notes + [f"answered with no chain stores; kept {len(cached)} cached"]
+    return [], notes + ["answered, but with no chain supermarkets in it"]
 
 
 def nearest_grocery(coords: tuple, stores: list[dict]) -> dict | None:
@@ -1788,7 +1833,7 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     previous_ids = {l["id"] for l in previous["listings"]}
 
     geocode_cache = _load_geocode_cache()
-    grocery_stores = fetch_grocery_stores()
+    grocery_stores, grocery_notes = fetch_grocery_stores()
     if not grocery_stores and previous.get("groceries"):
         # Last line of defence: a lookup that failed with no cache on disk would
         # otherwise publish a payload with no shops, and the dashboard hides its
@@ -1796,6 +1841,7 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         # silently remove the feature until the next successful scrape.
         grocery_stores = previous["groceries"]
         print(f"  reusing {len(grocery_stores)} store(s) from the previous run's data")
+        grocery_notes.append(f"reused {len(grocery_stores)} from the previous run")
     print("geocoding areas (cached after first run)...")
     if bike_routes:
         print(f"working out cycling routes to {len(SCHOOLS)} campuses "
@@ -1867,6 +1913,42 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     for l in sssb_listings:
         l["coords"] = addr_cache.get(l.get("address")) if l.get("address") else None
 
+    # A geocoder will happily hand back a street of the same name in a different
+    # municipality, and nothing downstream would notice: the dot lands miles away,
+    # and worse, that fake distance pushes the area over the split threshold so its
+    # roundel dissolves into per-building dots for a reason that isn't real.
+    # Confirmed live on 2026-08-09 — Domus, a single block on Körsbärsvägen,
+    # reported a 15,948 m spread. An address is by definition inside its own area,
+    # so anything implausibly far from the area centre is wrong; drop it back to
+    # the centre, which is exactly where every listing sat before per-building dots
+    # existed.
+    #
+    # Checked here rather than inside geocode_listing_address() on purpose: this
+    # way it also catches entries already sitting in the cache (including the one
+    # the Actions runner restores), so a bad answer stops mattering immediately
+    # instead of needing the cache purged first.
+    misplaced = drop_misplaced_addresses(sssb_listings, area_info)
+    if misplaced:
+        print(f"  ! {len(misplaced)} address(es) resolved more than "
+              f"{MAX_ADDRESS_OFFSET_M / 1000:g} km from their own area and were dropped "
+              "back to the area centre — most likely the same street name in another "
+              "municipality. Correct them in data/address_cache.json to place them "
+              "properly:")
+        for address, (area, off_m) in sorted(misplaced.items(), key=lambda kv: -kv[1][1]):
+            print(f"    · {address!r} ({area}) — {off_m / 1000:.1f} km away")
+        # The area centre is the trusted anchor here (those 26 coordinates are
+        # hand-verified and committed), so a single stray address means a bad
+        # address lookup. If instead *every* address in one area shows up above,
+        # suspect the anchor rather than the addresses.
+        from collections import Counter
+        by_area = Counter(area for area, _ in misplaced.values())
+        for area, n in by_area.items():
+            in_area = len({l["address"] for l in sssb_listings
+                           if l["area"] == area and l.get("address")})
+            if n == in_area and in_area > 1:
+                print(f"    ! that's every address in {area} — more likely its own centre "
+                      "is wrong in data/geocode_cache.json than all of its buildings")
+
     located = sum(1 for l in sssb_listings if l["coords"])
     print(f"  {located} of {len(sssb_listings)} SSSB listing(s) placed at their own "
           f"building ({len(wanted)} distinct address(es))")
@@ -1914,6 +1996,17 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     if bike_routes:
         print(f"bike times: {routed} of {len(area_info)} area(s) from real cycling routes, "
               f"{len(area_info) - routed} from the straight-line estimate")
+
+    # Restated here, next to the run's other headline numbers, because the Overpass
+    # block itself prints ~600 lines earlier — near the very start of a scrape. In a
+    # terminal you scroll up; in an Actions log you get the tail and nothing else,
+    # which is how a run that shipped no shops at all read as a completely normal
+    # green build. Whether a feature made it into the payload belongs in the summary.
+    trail = f" ({'; '.join(grocery_notes)})" if grocery_notes else ""
+    if grocery_stores:
+        print(f"shops: {len(grocery_stores)} chain supermarket(s) in the payload{trail}")
+    else:
+        print(f"shops: none — the dashboard's Shops toggle will be hidden{trail}")
 
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),

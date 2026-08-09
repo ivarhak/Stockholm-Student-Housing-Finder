@@ -69,6 +69,13 @@ jobs:
       #    map dots. Nominatim asks for 1 req/sec and no bulk geocoding; without
       #    this the runner would re-look-up all of them every two hours, which
       #    would be exactly the abuse that policy is about.
+      #  · grocery_cache.json — the chain supermarkets. Left out of this list at
+      #    first, which meant every publish threw the list away and re-asked
+      #    Overpass from scratch: 12 full queries a day to a free community
+      #    service, and a map with no shop dots whenever one of them was busy.
+      #    The file has a 30-day expiry of its own, so caching it here doesn't
+      #    freeze the data — it just stops us asking twelve times a day for an
+      #    answer that changes about once a year.
       - name: Restore scrape caches
         uses: actions/cache/restore@v4
         with:
@@ -76,6 +83,7 @@ jobs:
             data/bike_route_cache.json
             data/current_listings.json
             data/address_cache.json
+            data/grocery_cache.json
           key: sshf-scrape-cache-
           restore-keys: sshf-scrape-cache-
 
@@ -112,6 +120,12 @@ jobs:
           print(f"publishing {n} listings — {by}")
           print(f"generated_at {data['generated_at']}")
           print(f"new this run: {len(data.get('new_listing_ids') or [])}")
+          # Printed from the payload that's actually being deployed, not from the
+          # scrape's own report, so this is the last word on whether the Shops
+          # toggle will exist on the published page. A run that quietly shipped
+          # zero shops used to look exactly like a healthy one from here.
+          shops = len(data.get("groceries") or [])
+          print(f"shops: {shops}" + (" — the Shops toggle will be hidden" if not shops else ""))
           PY
 
       - name: Save scrape caches
@@ -126,6 +140,7 @@ jobs:
             data/bike_route_cache.json
             data/current_listings.json
             data/address_cache.json
+            data/grocery_cache.json
           key: sshf-scrape-cache-${{ github.run_id }}
 
       - name: Configure Pages

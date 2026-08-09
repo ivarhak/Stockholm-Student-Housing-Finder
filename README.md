@@ -260,7 +260,10 @@ with "Start in" set to this folder.
   The addresses come from each card, geocoded via OpenStreetMap and cached in
   `data/address_cache.json` — buildings don't move, so this is a one-time cost of
   about 40 lookups. An address that won't resolve leaves that listing at the area
-  centre rather than dropping it.
+  centre rather than dropping it, and so does one that resolves *implausibly* —
+  more than 3 km from its own area, which is how a same-named street in another
+  municipality gives itself away. The terminal names any address that gets
+  dropped that way so you can correct it in the cache file by hand.
 - **Chain supermarkets on the map.** The **Shops** chip (next to the provider
   chips) draws a dot for every ICA, Coop, Willys, Hemköp, Lidl and City Gross in
   greater Stockholm, from OpenStreetMap. Off by default, and only drawn from zoom
@@ -277,8 +280,14 @@ with "Start in" set to this folder.
   couple of mirrors are tried in turn and the terminal prints which answered;
   `OVERPASS_URL` puts your own first. A failed lookup keeps whatever the last
   successful one found rather than losing the dots — the chip only disappears if
-  there has *never* been a successful lookup, and the terminal says so when that
-  happens.
+  there has *never* been a successful lookup, and the run's summary says so when
+  that happens (`shops: none — …`, with what each endpoint answered).
+  That cache file is **committed to the repo on purpose**, unlike the other
+  caches: Overpass rate-limits shared cloud IPs, so the GitHub Actions runner
+  that builds the published site is the one machine that can't reliably fetch it.
+  A list gathered from an ordinary connection and committed is what gives the
+  published site its shop dots. To refresh it, run the tool once and commit the
+  file if it changed.
 - **Area colours match the tunnelbana.** A roundel's colour is the line its
   area sits on — North blue, South red, City green — matching the three lines
   drawn on the map in official SL colours. Gray × means an area exists but has

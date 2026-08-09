@@ -2,10 +2,15 @@
 # test data to fresh clones, which the server then served as if it were current.
 data/current_listings.json
 
-# Regenerable caches. data/geocode_cache.json is deliberately NOT here: the 26
-# area coordinates never change, and having them committed means a fresh clone
-# (and the scheduled Actions run) skips ~26 geocoding lookups entirely.
-data/grocery_cache.json
+# Regenerable caches. Two are deliberately NOT here, for the same reason:
+#  · data/geocode_cache.json — the 26 area coordinates never change, so having
+#    them committed means a fresh clone (and the scheduled Actions run) skips
+#    ~26 geocoding lookups entirely.
+#  · data/grocery_cache.json — Overpass throttles shared cloud IPs, so the
+#    Actions runner is the one machine that can't reliably fetch it. Committing
+#    a list gathered from a normal connection is what lets the published site
+#    have shop dots at all. It carries its own 30-day expiry, so a stale
+#    committed copy still gets refreshed whenever a fetch does succeed.
 data/bike_route_cache.json
 data/address_cache.json
 
