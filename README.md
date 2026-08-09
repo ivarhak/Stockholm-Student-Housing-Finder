@@ -15,8 +15,8 @@ Ko-fi link available on site if you want to optionally support me as a dev :P
 locally for desktop notifications and an on-demand Refresh. See section 4.
 
 Two pieces:
-- `sssb_kth_monitor.py` — runs on your machine: Selenium scraping for SSSB, a plain HTTP fetch for Bostadsförmedlingen, commute math, and a small local API.
-- `sssb_kth_dashboard.html` — the UI. Served by the script itself locally, and published as-is to GitHub Pages, where it reads a pre-scraped `listings.json` instead of the API.
+- `monitor.py` — runs on your machine: Selenium scraping for SSSB, a plain HTTP fetch for Bostadsförmedlingen, commute math, and a small local API.
+- `index.html` — the UI. Served by the script itself locally, and published as-is to GitHub Pages, where it reads a pre-scraped `listings.json` instead of the API.
 
 
 ## 1. Setup
@@ -41,12 +41,12 @@ section 3), but keep it installed so that fallback exists.
 python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-python sssb_kth_monitor.py      # no arguments = serve the dashboard
+python monitor.py      # no arguments = serve the dashboard
 ```
 
 Running with no arguments serves the dashboard, which is what you want almost
 every time. In PyCharm or similar, point a run configuration at
-`sssb_kth_monitor.py` with no arguments and it'll do the same thing.
+`monitor.py` with no arguments and it'll do the same thing.
 </details>
 
 <details>
@@ -69,7 +69,7 @@ Cmd+I, and paste an image onto the small icon in the top-left of the Info window
 Pass `--with-login`, and store credentials first with:
 
 ```bash
-python sssb_kth_monitor.py --login
+python monitor.py --login
 ```
 
 This prompts for your username and password (password input is hidden) and
@@ -108,7 +108,7 @@ If it ever comes back empty while you can see real listings on the site
 yourself:
 
 ```bash
-python sssb_kth_monitor.py --debug
+python monitor.py --debug
 ```
 
 That runs a **visible** browser window (so you can watch what happens) and
@@ -130,7 +130,7 @@ from that alone.
 
 **Dashboard** — double-click `start.command`, or from a terminal:
 ```bash
-python sssb_kth_monitor.py          # no arguments needed
+python monitor.py          # no arguments needed
 ```
 It scrapes if the saved listings are stale, serves the UI + API, and opens
 **http://localhost:5055** in your browser by itself (`--no-browser` if you'd
@@ -155,7 +155,7 @@ the terminal what went wrong. The background auto-check retries on its own.
 
 **One-off check** (scrapes once, saves, notifies if there's something new, exits):
 ```bash
-python sssb_kth_monitor.py --once
+python monitor.py --once
 ```
 This one *does* exit non-zero if the scrape fails, since it's what cron runs and
 a silent success would be worse than a loud failure.
@@ -219,7 +219,7 @@ good deploy rather than publishing an empty map.
 
 ## 5. Getting notified automatically
 
-If you leave `python sssb_kth_monitor.py --serve` running, you're already
+If you leave `python monitor.py --serve` running, you're already
 covered — its background auto-check (every 15 min by default) fires the
 same desktop notification on new listings as `--once` does. The cron/Task
 Scheduler route below is only needed if you'd rather *not* keep the
@@ -229,11 +229,11 @@ dashboard process running all the time and just want periodic checks:
 ```bash
 crontab -e
 # add:
-*/30 * * * * cd /path/to/this-folder && /path/to/venv/bin/python sssb_kth_monitor.py --once >> cron.log 2>&1
+*/30 * * * * cd /path/to/this-folder && /path/to/venv/bin/python monitor.py --once >> cron.log 2>&1
 ```
 
 **Windows (Task Scheduler)**: create a basic task that runs
-`venv\Scripts\python.exe sssb_kth_monitor.py --once` every 30 minutes,
+`venv\Scripts\python.exe monitor.py --once` every 30 minutes,
 with "Start in" set to this folder.
 
 ## 6. Notes / known limitations
@@ -279,7 +279,7 @@ with "Start in" set to this folder.
   commute slider, the sorting and the map counts all follow. KTH is the
   default. You can also click any of the other campus pins on the map to
   switch to it. Seven Stockholm schools are built in (KTH, SU, KI, SSE,
-  Konstfack, KMH, KKH) — add more in `SCHOOLS` in `sssb_kth_monitor.py` and
+  Konstfack, KMH, KKH) — add more in `SCHOOLS` in `monitor.py` and
   the dropdown picks them up automatically.
 - **Bike times are real routes, not straight lines.** They come from
   [FOSSGIS's public Valhalla](https://valhalla1.openstreetmap.de/) routing

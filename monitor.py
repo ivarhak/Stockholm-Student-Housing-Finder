@@ -8,7 +8,7 @@ Bostadsförmedlingen's public student ads, works out how far each place is from
 your campus (both a rough straight-line estimate and a real public-transit time
 via Trafiklab's Resrobot API), diffs against the last run to spot newly-published
 listings, fires a desktop notification when something new shows up, and serves
-it all to the dashboard (sssb_kth_dashboard.html) over a tiny local API.
+it all to the dashboard (index.html) over a tiny local API.
 
 NO LOGIN NEEDED: SSSB's vacancy list is public — confirmed 2026-08-06,
 queue days ("Ködagar") included. Nothing here asks for credentials by
@@ -25,12 +25,12 @@ is still an open question; see CLAUDE.md.
 
 Usage:
     ./start.command                             # easiest: sets up the venv if needed, then serves
-    python sssb_kth_monitor.py                  # serve the dashboard and open it in a browser
-    python sssb_kth_monitor.py --once           # one scrape, save + notify, exit
-    python sssb_kth_monitor.py --no-browser     # serve, but don't open a browser
-    python sssb_kth_monitor.py --http-only      # no browser: fail instead of falling back to Selenium
-    python sssb_kth_monitor.py --debug          # also dump rendered HTML to debug_page.html
-    python sssb_kth_monitor.py --with-login     # only if SSSB starts requiring a login again
+    python monitor.py                  # serve the dashboard and open it in a browser
+    python monitor.py --once           # one scrape, save + notify, exit
+    python monitor.py --no-browser     # serve, but don't open a browser
+    python monitor.py --http-only      # no browser: fail instead of falling back to Selenium
+    python monitor.py --debug          # also dump rendered HTML to debug_page.html
+    python monitor.py --with-login     # only if SSSB starts requiring a login again
 """
 
 import argparse
@@ -266,7 +266,7 @@ def get_credentials() -> tuple[str, str]:
     if not sys.stdin.isatty():
         raise SystemExit(
             "No saved credentials, and this doesn't look like an interactive terminal "
-            "(likely a cron/scheduled run). Run `python sssb_kth_monitor.py --login` "
+            "(likely a cron/scheduled run). Run `python monitor.py --login` "
             "once by hand first to store credentials in your OS keychain, then "
             "unattended runs will pick them up automatically."
         )
@@ -1815,7 +1815,7 @@ def serve(interval_minutes: float, use_login: bool = False,
 
     @app.route("/")
     def index():
-        return send_from_directory(static_dir, "sssb_kth_dashboard.html")
+        return send_from_directory(static_dir, "index.html")
 
     @app.route("/api/listings")
     def api_listings():
@@ -1909,7 +1909,7 @@ if __name__ == "__main__":
                    http_only=args.http_only, bike_routes=not args.no_bike_routes,
                    bf_bike_routes=args.bike_routes_bf)
     # Anything else — `--serve`, or no arguments at all — serves. Bare
-    # `python sssb_kth_monitor.py` used to print help and exit 1, which made the
+    # `python monitor.py` used to print help and exit 1, which made the
     # one mode you want every day the one you had to remember a flag for.
     else:
         if args.interval < 5:

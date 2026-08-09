@@ -39,5 +39,5 @@ if not "%HAVE%"=="%WANT%" (
 echo Starting - the dashboard will open in your browser.
 echo The first scrape takes about a minute. Press Ctrl+C here to stop.
 echo.
-"%VENV%\Scripts\python.exe" sssb_kth_monitor.py %*
+"%VENV%\Scripts\python.exe" monitor.py %*
 if errorlevel 1 pause

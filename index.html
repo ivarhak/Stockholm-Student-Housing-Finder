@@ -973,7 +973,7 @@ let browseAll = false;
 let searchQuery = '';
 let currentTab = 'listings';
 
-// ---- demo data, shown only if the local server (sssb_kth_monitor.py --serve) isn't running ----
+// ---- demo data, shown only if the local server (monitor.py --serve) isn't running ----
 const DEMO_DATA = {
   demo: true,
   generated_at: new Date().toISOString(),
@@ -1090,7 +1090,7 @@ async function loadData(triggerRefresh){
     } catch (e2) {
       currentData = DEMO_DATA;
       dataSource = 'demo';
-      showBanner('Showing example data — start the local server (python sssb_kth_monitor.py) and open http://localhost:5055 for live listings.');
+      showBanner('Showing example data — start the local server (python monitor.py) and open http://localhost:5055 for live listings.');
     }
   }
   lastGeneratedAt = currentData.generated_at;

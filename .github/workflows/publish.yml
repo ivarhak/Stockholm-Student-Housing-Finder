@@ -5,8 +5,9 @@ name: Publish dashboard
 # reads listings.json instead of /api/listings when no server answers, so there
 # is one UI to maintain rather than two.
 #
-# Before the first run, set Settings → Pages → Build and deployment →
-# Source: "GitHub Actions". Without that the deploy step fails.
+# Pages is turned on by the configure-pages step below, so there's no Settings
+# toggle to remember. This is the ONLY workflow that should deploy to Pages —
+# a second one would fight it, since every deploy replaces the whole site.
 
 on:
   schedule:
@@ -18,7 +19,7 @@ on:
     branches: [main]
     # Republish when the UI itself changes, without waiting for the next scrape.
     paths:
-      - 'sssb_kth_dashboard.html'
+      - 'index.html'
       - '.github/workflows/publish.yml'
 
 permissions:
@@ -84,13 +85,13 @@ jobs:
           if [ "${{ github.event_name }}" = "push" ] && [ -f data/current_listings.json ]; then
             echo "UI-only push, and the cache already has listings — redeploying without scraping."
           else
-            python sssb_kth_monitor.py --once
+            python monitor.py --once
           fi
 
       - name: Assemble the site
         run: |
           mkdir -p _site
-          cp sssb_kth_dashboard.html _site/index.html
+          cp index.html _site/index.html
           python - <<'PY'
           import json, os, pathlib
           data = json.loads(pathlib.Path("data/current_listings.json").read_text())
@@ -121,6 +122,12 @@ jobs:
             data/current_listings.json
           key: sshf-scrape-cache-${{ github.run_id }}
 
+      - name: Configure Pages
+        # This is what enables Pages with "GitHub Actions" as the source, so the
+        # deploy below doesn't need anyone to have flipped that setting by hand
+        # first — which is exactly what was failing before.
+        uses: actions/configure-pages@v5
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
@@ -133,4 +140,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

@@ -71,7 +71,7 @@ say "Starting — the dashboard will open in your browser."
 echo "The first scrape takes about a minute. Press Ctrl+C here to stop."
 echo
 set +e
-"$VENV/bin/python" sssb_kth_monitor.py "$@"
+"$VENV/bin/python" monitor.py "$@"
 STATUS=$?
 set -e
 
