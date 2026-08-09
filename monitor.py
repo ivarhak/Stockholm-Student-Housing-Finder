@@ -428,7 +428,16 @@ def area_spread_m(coords_list: list) -> int:
 # don't move, so re-fetching on every scrape would be pointless load on a free
 # community service. Same convention as the geocode and bike-route caches.
 
-OVERPASS_URL = os.environ.get("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
+# Several public Overpass endpoints, tried in order. The main one is heavily
+# loaded and routinely answers 429/504 at busy times, which is the difference
+# between the map having shop dots and not — so don't depend on a single mirror.
+# Same approach as BF_ALL_ADS_URLS. OVERPASS_URL overrides and is tried first.
+OVERPASS_URLS = [u for u in (
+    os.environ.get("OVERPASS_URL"),
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+) if u]
 # Greater Stockholm, comfortably covering every SSSB area and the BF ads —
 # Flemingsberg in the south, Kista in the north-west.
 GROCERY_BBOX = (59.15, 17.75, 59.50, 18.35)   # south, west, north, east
@@ -462,24 +471,32 @@ def _grocery_chain(*names) -> str | None:
     return None
 
 
-def _load_grocery_cache() -> dict | None:
-    """Cached stores, or None if missing/stale/unreadable."""
+def _load_grocery_cache() -> tuple[list | None, bool]:
+    """(stores, is_fresh). `stores` is None only if there's no readable cache.
+
+    Freshness and usability are deliberately separate answers. A stale cache
+    still needs refetching, but it is *far* better than nothing if that refetch
+    fails — supermarkets don't move, so last month's list is still basically
+    right, while an empty list silently removes the feature from the map.
+    """
     if not GROCERY_CACHE_FILE.exists():
-        return None
+        return None, False
     try:
         cached = json.loads(GROCERY_CACHE_FILE.read_text())
+        stores = cached["stores"]
         fetched = datetime.fromisoformat(cached["fetched_at"])
     except (ValueError, KeyError, TypeError, OSError):
-        return None
+        return None, False
     if fetched.tzinfo is None:
         fetched = fetched.replace(tzinfo=timezone.utc)
     age_days = (datetime.now(timezone.utc) - fetched).total_seconds() / 86400
     if age_days > GROCERY_MAX_AGE_DAYS:
-        print(f"  grocery cache is {age_days:.0f} days old — refetching")
-        return None
+        print(f"  grocery cache is {age_days:.0f} days old — refetching "
+              f"(keeping the {len(stores)} cached one(s) in case that fails)")
+        return stores, False
     print(f"  {len(cached['stores'])} grocery store(s) from cache "
           f"({age_days:.0f} days old)")
-    return cached
+    return stores, True
 
 
 def fetch_grocery_stores() -> list[dict]:
@@ -488,9 +505,9 @@ def fetch_grocery_stores() -> list[dict]:
     Never fatal: the map is perfectly usable without shop dots, so any failure
     degrades to an empty list with a printed reason rather than stopping a scrape.
     """
-    cached = _load_grocery_cache()
-    if cached:
-        return cached["stores"]
+    cached, fresh = _load_grocery_cache()
+    if fresh:
+        return cached
 
     south, west, north, east = GROCERY_BBOX
     bbox = f"{south},{west},{north},{east}"
@@ -506,18 +523,32 @@ out center tags;
 """
     print(f"fetching grocery stores from OpenStreetMap (Overpass, cached "
           f"{GROCERY_MAX_AGE_DAYS} days)...")
-    try:
-        resp = requests.post(
-            OVERPASS_URL,
-            data={"data": query},
-            headers={"User-Agent": "personal student-housing monitor"},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        elements = resp.json().get("elements", [])
-    except (requests.RequestException, ValueError) as e:
-        print(f"  ! grocery lookup failed ({type(e).__name__}: {e}) — "
-              "continuing without shop markers")
+    elements = None
+    for url in OVERPASS_URLS:
+        try:
+            resp = requests.post(
+                url,
+                data={"data": query},
+                headers={"User-Agent": "personal student-housing monitor"},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            elements = resp.json().get("elements", [])
+            print(f"  · {url} → OK ({len(elements)} element(s))")
+            break
+        except (requests.RequestException, ValueError) as e:
+            reason = getattr(getattr(e, "response", None), "status_code", None) or type(e).__name__
+            print(f"  · {url} → {reason}")
+
+    if elements is None:
+        # Every mirror refused. Routine enough at busy times that it must not cost
+        # the map its shop dots for the next two hours.
+        print("  ! no Overpass endpoint answered")
+        if cached:
+            print(f"    falling back to {len(cached)} store(s) from the stale cache")
+            return cached
+        print("    and no cache to fall back on — the map's Shops toggle will be\n"
+              "    hidden this run. Try again later, or set OVERPASS_URL=<mirror>.")
         return []
 
     stores, skipped, no_coords = [], 0, 0
@@ -551,7 +582,15 @@ out center tags;
         GROCERY_CACHE_FILE.write_text(json.dumps(
             {"fetched_at": datetime.now(timezone.utc).isoformat(), "stores": stores},
             ensure_ascii=False, indent=1))
-    return stores
+        return stores
+
+    # Answered, but with nothing usable — a changed tag scheme, or a truncated
+    # response. Same reasoning as a failed request: keep what we had.
+    print("  ! the response contained no chain supermarkets at all")
+    if cached:
+        print(f"    keeping {len(cached)} store(s) from the previous lookup")
+        return cached
+    return []
 
 
 def nearest_grocery(coords: tuple, stores: list[dict]) -> dict | None:
@@ -1750,6 +1789,13 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
 
     geocode_cache = _load_geocode_cache()
     grocery_stores = fetch_grocery_stores()
+    if not grocery_stores and previous.get("groceries"):
+        # Last line of defence: a lookup that failed with no cache on disk would
+        # otherwise publish a payload with no shops, and the dashboard hides its
+        # Shops toggle when there are none — so one bad Overpass minute would
+        # silently remove the feature until the next successful scrape.
+        grocery_stores = previous["groceries"]
+        print(f"  reusing {len(grocery_stores)} store(s) from the previous run's data")
     print("geocoding areas (cached after first run)...")
     if bike_routes:
         print(f"working out cycling routes to {len(SCHOOLS)} campuses "

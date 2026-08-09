@@ -273,8 +273,12 @@ with "Start in" set to this folder.
   still be a 700 m walk.
   Shops are cached in `data/grocery_cache.json` for 30 days, since supermarkets
   don't move and re-fetching them every scrape would be pointless load on a free
-  community service. `OVERPASS_URL` overrides the endpoint. If the lookup fails
-  the run says so and carries on without dots.
+  community service. Overpass's main endpoint is busy and often refuses, so a
+  couple of mirrors are tried in turn and the terminal prints which answered;
+  `OVERPASS_URL` puts your own first. A failed lookup keeps whatever the last
+  successful one found rather than losing the dots — the chip only disappears if
+  there has *never* been a successful lookup, and the terminal says so when that
+  happens.
 - **Area colours match the tunnelbana.** A roundel's colour is the line its
   area sits on — North blue, South red, City green — matching the three lines
   drawn on the map in official SL colours. Gray × means an area exists but has
