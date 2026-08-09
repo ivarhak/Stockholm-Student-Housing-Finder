@@ -333,6 +333,93 @@ def geocode_area(name: str, cache: dict) -> tuple | None:
     return None
 
 
+# ── Per-listing addresses ────────────────────────────────────────────────
+#
+# SSSB listings carry no coordinates, only an area — which is fine for a city
+# view but wrong once you zoom into somewhere like Lappkärrsberget, where one
+# roundel stands for a dozen buildings spread over half a kilometre. Geocoding
+# each card's street address lets the map break that roundel apart.
+#
+# Cheap in practice: the ~76 listings share far fewer buildings than that, and
+# the buildings never move, so this converges to a warm cache after a run or two
+# and costs nothing thereafter. Anything that fails falls back to the area
+# centre, which is exactly where it sat before.
+
+ADDRESS_CACHE_FILE = DATA_DIR / "address_cache.json"
+
+
+def _load_address_cache() -> dict:
+    if ADDRESS_CACHE_FILE.exists():
+        try:
+            return json.loads(ADDRESS_CACHE_FILE.read_text())
+        except ValueError:
+            print("  ! address cache unreadable — starting a fresh one")
+    return {}
+
+
+def _save_address_cache(cache: dict):
+    ADDRESS_CACHE_FILE.write_text(json.dumps(cache, indent=1, ensure_ascii=False))
+
+
+def geocode_listing_address(address: str, area: str, cache: dict) -> list | None:
+    """(lat, lon) for one street address, cached to disk. None if unresolvable.
+
+    Queried with the area's own postcode/city tail where we have one, because
+    "Forskarbacken 10, Sweden" is ambiguous nationally while
+    "Forskarbacken 10, 114 17 Stockholm, Sweden" is not. Hand-correct
+    data/address_cache.json if a dot ever lands somewhere silly, same as the
+    area cache.
+    """
+    if address in cache:
+        return cache[address]
+
+    # Reuse the area's verified city/postcode tail so the search is anchored to
+    # the right municipality — several of these areas aren't in Stockholm proper
+    # (Solna, Täby, Nacka, Huddinge).
+    area_query = AREA_ADDRESSES.get(area, "")
+    tail = ", ".join(area_query.split(", ")[1:]) if ", " in area_query else "Stockholm, Sweden"
+    query = f"{address}, {tail}"
+    coords = None
+    try:
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": query, "format": "json", "limit": 1},
+            headers={"User-Agent": "sssb-kth-commute-tool/1.0 (personal use)"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = resp.json()
+        if results:
+            coords = [float(results[0]["lat"]), float(results[0]["lon"])]
+        time.sleep(1)  # Nominatim's 1 req/sec usage policy
+    except (requests.RequestException, ValueError, KeyError) as e:
+        print(f"  ! address lookup failed for {address!r}: {e}")
+        # Not cached as a failure: a network blip shouldn't permanently blacklist
+        # a real address. A *resolved-to-nothing* answer is cached below.
+        return None
+
+    cache[address] = coords
+    _save_address_cache(cache)
+    return coords
+
+
+def area_spread_m(coords_list: list) -> int:
+    """How far apart an area's listings actually are — the widest gap between any
+    two of them, in metres.
+
+    This is what decides whether an area is worth breaking apart on the map. A
+    single building comes out near zero and stays one roundel; a campus like
+    Lappkärrsberget comes out in the hundreds.
+    """
+    if len(coords_list) < 2:
+        return 0
+    widest = 0.0
+    for i, a in enumerate(coords_list):
+        for b in coords_list[i + 1:]:
+            widest = max(widest, haversine_km(tuple(a), tuple(b)))
+    return int(round(widest * 1000))
+
+
 # ── Grocery stores (OpenStreetMap Overpass — free, no key) ───────────────
 #
 # "Is there a supermarket near this place?" is a real question when picking
@@ -850,9 +937,20 @@ def _parse_listing_from_link(link, url: str) -> dict:
     (housing_type, queue_days, rent_sek, size_sqm, floor,
      max_years, el_included) = _parse_card_fields(card_text)
 
+    # Street address, e.g. "Forskarbacken 10" out of "Forskarbacken 10 / 1002".
+    # The apartment number is dropped: it's no use for geocoding, and several
+    # listings in the same building should share one cache entry.
+    addr_match = _CARD_ADDRESS_RE.search(card_text)
+    address = None
+    if addr_match:
+        address = f"{addr_match.group('street')} {addr_match.group('number')}"
+        if addr_match.group("entrance"):
+            address += f" {addr_match.group('entrance')}"   # "Armégatan 32 A"
+
     return {
         "id": url,
         "area": area,
+        "address": address,
         "raw_text": card_text[:300],
         "type": housing_type,
         "queue_days": queue_days,
@@ -930,6 +1028,20 @@ def _parse_el_included(card_text: str) -> bool | None:
 # the start of the street address (a word immediately followed by "<number>
 # / <number>", e.g. "Studentbacken 23 / 1313").
 _CARD_TYPE_RE = re.compile(r"^(?:Previous\s+Next\s+)?(.*?)\s+\S+\s+\d+\s*/\s*\d+\s")
+
+# The same anchor, read the other way round: the street name and house number
+# that precede the apartment number.
+#
+# Three shapes appear in real cards, and a single-token street only handles the
+# first: "Forskarbacken 10 / 1002", "Körsbärsvägen 4 C / 1202" (letter suffix on
+# the entrance), and "Gustav III:s Boulevard 2 / 1408" (multi-word street). So
+# take the run of up-to-three capitalised words immediately before the number —
+# the housing type that precedes it always ends in a lowercase word ("rum i
+# korridor", "1 rum & kök"), which is what stops the run from swallowing it.
+_CARD_ADDRESS_RE = re.compile(
+    r"(?P<street>(?:[A-ZÅÄÖ][\wåäöÅÄÖ:.\-]*\s+){0,2}[A-ZÅÄÖ][\wåäöÅÄÖ:.\-]*)"
+    r"\s+(?P<number>\d+)\s*(?P<entrance>[A-ZÅÄÖ])?\s*/\s*\d+"
+)
 
 _TYPE_TRANSLATIONS = {
     "rum i korridor": "Corridor room (dorm)",
@@ -1693,6 +1805,39 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     for l in sssb_listings:
         l["provider"] = "SSSB"
         l["landlord"] = "SSSB"
+
+    # Place each SSSB listing at its own building, so the map can break an area
+    # roundel apart when you zoom into it. Distinct addresses only — a dozen rooms
+    # in one building share a lookup — and cached forever, since buildings don't
+    # move. Anything unresolved keeps `coords: None` and stays at the area centre.
+    addr_cache = _load_address_cache()
+    wanted = sorted({(l["address"], l["area"]) for l in sssb_listings if l.get("address")})
+    fresh = [a for a, _ in wanted if a not in addr_cache]
+    if fresh:
+        print(f"geocoding {len(fresh)} new building address(es) "
+              f"({len(wanted) - len(fresh)} already cached, ~1s each)...")
+    for address, area in wanted:
+        geocode_listing_address(address, area, addr_cache)
+    for l in sssb_listings:
+        l["coords"] = addr_cache.get(l.get("address")) if l.get("address") else None
+
+    located = sum(1 for l in sssb_listings if l["coords"])
+    print(f"  {located} of {len(sssb_listings)} SSSB listing(s) placed at their own "
+          f"building ({len(wanted)} distinct address(es))")
+
+    # How spread out each area's listings actually are. The dashboard uses this to
+    # decide which roundels are worth dissolving into per-building dots: a single
+    # block comes out near zero, a campus like Lappkärrsberget in the hundreds.
+    for name, area in area_info.items():
+        here = [l["coords"] for l in sssb_listings
+                if l["area"] == name and l["coords"]]
+        area["spread_m"] = area_spread_m(here)
+        area["located_listings"] = len(here)
+    spread_areas = {n: a["spread_m"] for n, a in area_info.items() if a["spread_m"] >= 120}
+    if spread_areas:
+        print("  spread out enough to split on the map: "
+              + ", ".join(f"{n} ({m} m)" for n, m in
+                          sorted(spread_areas.items(), key=lambda kv: -kv[1])))
 
     bf_listings = fetch_bostadsformedlingen()
     # Bostadsförmedlingen ads get straight-line estimates rather than routed

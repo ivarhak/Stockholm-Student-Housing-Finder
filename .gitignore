@@ -7,6 +7,7 @@ data/current_listings.json
 # (and the scheduled Actions run) skips ~26 geocoding lookups entirely.
 data/grocery_cache.json
 data/bike_route_cache.json
+data/address_cache.json
 
 # Scrape diagnostics, written by --debug
 debug_page.html

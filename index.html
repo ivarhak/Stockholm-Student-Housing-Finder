@@ -631,6 +631,22 @@
     background:var(--plum);
     border:2px solid var(--pin-ring);
   }
+  /* One SSSB listing at its own building, shown instead of the area roundel once
+     the area is selected or you've zoomed in far enough. Same line colour as the
+     roundel it came out of, so the relationship is obvious. Colour is set inline
+     from LINE_COLORS (a token), the ring here. */
+  .listing-dot{
+    border-radius:50%;
+    border:2px solid var(--pin-ring);
+    box-sizing:content-box;
+  }
+  /* A building holding more than one listing carries the count, like the area
+     roundel it came out of. */
+  .listing-dot.many{
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-size:10px;font-weight:700;
+    color:var(--pin-ring);
+  }
   /* The dashed area→campus line. Styled here rather than through Leaflet's
      `color` option, because that becomes an SVG presentation attribute and
      those don't resolve var(); a CSS `stroke` declaration does, and also wins
@@ -1309,6 +1325,17 @@ function initMap(){
   // reconsidered when the zoom crosses that line.
   leafletMap.on('zoomend', syncGroceryLayer);
 
+  // Crossing AREA_SPLIT_ZOOM changes which areas are roundels and which are
+  // per-building dots. Compare the set first: a zoom that doesn't change it
+  // shouldn't pay for rebuilding every marker on the map.
+  leafletMap.on('zoomend', () => {
+    const now = splitSignature();
+    if (now !== lastSplitSignature) {
+      lastSplitSignature = now;
+      renderMap();
+    }
+  });
+
   // .panel-header sticks just below .tabs — measure the real rendered
   // height rather than hardcoding it, so a font/zoom change can't leave a
   // gap or overlap between the two sticky bars.
@@ -1352,6 +1379,9 @@ let groceryLayer = null;
 let showGroceries = false;
 let groceryDrawnCount = -1;
 let groceryRenderer = null;
+// Which areas were drawn as dots last time, so a zoom that doesn't change the
+// answer doesn't trigger a full marker rebuild.
+let lastSplitSignature = '';
 // Below this zoom the dots blanket the city and bury the area roundels, which
 // are the actual point of the map. They earn their place once you've zoomed into
 // a neighbourhood to size it up.
@@ -1408,7 +1438,37 @@ function syncGroceryToggle(count){
   chip.classList.toggle('off', !showGroceries);
 }
 
+// ---- splitting an area into its individual buildings ----
+// One roundel per area is right at city zoom, but wrong once you're looking at
+// somewhere like Lappkärrsberget, where it stands for two dozen buildings spread
+// over a kilometre. Selecting the area — or zooming in far enough that the spread
+// is actually visible — replaces it with a dot per listing at its own address.
+//
+// Only for areas that are genuinely spread out. `spread_m` is the widest gap
+// between any two of the area's listings, computed at scrape time; a single block
+// comes out near zero and keeps its roundel, which is what you want.
+const AREA_SPLIT_MIN_M = 120;
+const AREA_SPLIT_ZOOM = 14;
+
+function areaSplits(name){
+  const a = currentData.areas[name];
+  if (!a || !a.coords) return false;
+  if ((a.spread_m || 0) < AREA_SPLIT_MIN_M) return false;
+  // Needs at least two placed listings, or there's nothing to spread apart.
+  if (!(a.located_listings > 1)) return false;
+  return selectedArea === name || leafletMap.getZoom() >= AREA_SPLIT_ZOOM;
+}
+
+// Which areas are currently drawn as dots — compared on zoom to decide whether a
+// re-render is needed at all, so panning and zooming outside the threshold stay
+// free.
+function splitSignature(){
+  if (!currentData || !currentData.areas) return '';
+  return Object.keys(currentData.areas).filter(areaSplits).sort().join('|');
+}
+
 function renderMap(){
+  lastSplitSignature = splitSignature();
   markers.forEach(m => leafletMap.removeLayer(m));
   markers = [];
   renderSchools();
@@ -1418,8 +1478,48 @@ function renderMap(){
     Object.entries(currentData.areas).forEach(([name, area]) => {
       if (!area.coords) return;
       const isVisible = visible.has(name);
-      const count = sssbListingsInArea(name).length;
+      const inArea = sssbListingsInArea(name);
+      const count = inArea.length;
       const isEmpty = count === 0;
+
+      // Dissolved: a dot per *building*, not per listing. Grouping matters —
+      // several rooms in one block share an address and would otherwise stack
+      // as identical dots at identical pixels, which looks like one listing.
+      // Same count-in-a-circle idiom as the area roundel, one level down.
+      if (isVisible && count > 0 && areaSplits(name)) {
+        const colour = LINE_COLORS[area.group] || 'var(--dim)';
+        const buildings = new Map();
+        inArea.forEach(l => {
+          // A listing whose address wouldn't geocode sits at the area centre
+          // rather than vanishing.
+          const key = l.address || name;
+          if (!buildings.has(key)) buildings.set(key, { at: l.coords || area.coords, rows: [] });
+          buildings.get(key).rows.push(l);
+        });
+        buildings.forEach(({ at, rows }, address) => {
+          const many = rows.length > 1;
+          const size = many ? 20 : 11;
+          const icon = L.divIcon({
+            className: '',
+            html: `<div class="listing-dot${many ? ' many' : ''}" style="width:${size}px;height:${size}px;`
+                + `background:${colour}">${many ? rows.length : ''}</div>`,
+            iconSize: [size, size],
+          });
+          const marker = L.marker(at, { icon, zIndexOffset: 200 }).addTo(leafletMap);
+          const line = l => [l.type, l.size_sqm ? l.size_sqm + ' m²' : null,
+                             l.rent_sek ? Number(l.rent_sek).toLocaleString() + ' kr' : null,
+                             l.queue_days != null ? l.queue_days.toLocaleString() + ' d' : null]
+                            .filter(Boolean).join(' · ');
+          const shown = rows.slice(0, 4).map(line);
+          if (rows.length > shown.length) shown.push(`+${rows.length - shown.length} more`);
+          marker.bindTooltip(`<b>${address}</b><br>${shown.join('<br>')}`, { direction:'top' });
+          // Only unambiguous when the building holds one listing; otherwise the
+          // sidebar is already showing them all and a click would have to pick.
+          if (!many && rows[0].url) marker.on('click', () => window.open(rows[0].url, '_blank'));
+          markers.push(marker);
+        });
+        return;
+      }
       const color = isEmpty ? 'var(--empty)' : (LINE_COLORS[area.group] || 'var(--dim)');
       const size = isEmpty ? 16 : 14 + Math.min(count, 6) * 3;
 
@@ -1464,14 +1564,29 @@ function selectArea(name){
     routeLine = L.polyline([area.coords, centre()], {
       className: `route-line route-${area.group}`, weight:2, dashArray:'4 6', opacity:0.8
     }).addTo(leafletMap);
-    leafletMap.flyTo(area.coords, 13, { duration:0.6 });
+    // When the area dissolves, frame its actual buildings rather than dropping
+    // to a fixed zoom: at 13 a kilometre-wide area packs two dozen overlapping
+    // dots into ~150px, which defeats the point of splitting it up.
+    const spots = sssbListingsInArea(name).map(l => l.coords).filter(Boolean);
+    if (areaSplits(name) && spots.length > 1) {
+      leafletMap.flyToBounds(spots, { padding: [70, 70], maxZoom: 16, duration: 0.6 });
+    } else {
+      leafletMap.flyTo(area.coords, 13, { duration:0.6 });
+    }
   }
+  // Same reason as clearSelection(): this can dissolve the area's roundel. It
+  // used to happen only as a side effect of flyTo's zoom change, which wouldn't
+  // fire if the map were already at that zoom.
+  renderMap();
   renderSidebar();
 }
 
 function clearSelection(){
   selectedArea = null;
   if (routeLine) { leafletMap.removeLayer(routeLine); routeLine = null; }
+  // Selection decides whether a spread-out area is drawn as one roundel or as
+  // per-building dots, so dropping it has to redraw the map — not just the list.
+  renderMap();
   renderSidebar();
 }
 

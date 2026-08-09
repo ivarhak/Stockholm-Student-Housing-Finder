@@ -65,12 +65,17 @@ jobs:
       #  · current_listings.json — the previous run's listings, which is what
       #    new-listing diffing compares against. Without it every run would mark
       #    all ~170 listings as NEW, since the runner starts empty each time.
+      #  · address_cache.json — the ~43 building addresses behind the per-listing
+      #    map dots. Nominatim asks for 1 req/sec and no bulk geocoding; without
+      #    this the runner would re-look-up all of them every two hours, which
+      #    would be exactly the abuse that policy is about.
       - name: Restore scrape caches
         uses: actions/cache/restore@v4
         with:
           path: |
             data/bike_route_cache.json
             data/current_listings.json
+            data/address_cache.json
           key: sshf-scrape-cache-
           restore-keys: sshf-scrape-cache-
 
@@ -120,6 +125,7 @@ jobs:
           path: |
             data/bike_route_cache.json
             data/current_listings.json
+            data/address_cache.json
           key: sshf-scrape-cache-${{ github.run_id }}
 
       - name: Configure Pages

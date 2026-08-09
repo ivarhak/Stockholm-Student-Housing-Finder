@@ -246,6 +246,21 @@ with "Start in" set to this folder.
   still loads where storage is blocked (it just won't persist there). That's the
   only browser storage this file touches; everything else about what's new since
   the last check is computed server-side.
+- **Areas split into buildings when you zoom in or select them.** An SSSB area
+  like Lappkärrsberget is two dozen buildings spread over a kilometre, so one
+  roundel is a lie once you're looking closely. Click the area — or zoom to 14 —
+  and it dissolves into a dot per building, placed at its real address; clicking
+  the area frames its actual buildings rather than dropping to a fixed zoom.
+  Deselect or zoom out and the roundel comes back.
+  Only areas that are genuinely spread out do this: the scrape records how far
+  apart each area's listings are, and anything under 120 m (Jerum's two blocks,
+  say) keeps its single roundel, because splitting it would just produce
+  overlapping dots. A building with several listings shows the count, like the
+  roundel it came out of, and its tooltip lists them.
+  The addresses come from each card, geocoded via OpenStreetMap and cached in
+  `data/address_cache.json` — buildings don't move, so this is a one-time cost of
+  about 40 lookups. An address that won't resolve leaves that listing at the area
+  centre rather than dropping it.
 - **Chain supermarkets on the map.** The **Shops** chip (next to the provider
   chips) draws a dot for every ICA, Coop, Willys, Hemköp, Lidl and City Gross in
   greater Stockholm, from OpenStreetMap. Off by default, and only drawn from zoom
