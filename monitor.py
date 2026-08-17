@@ -117,6 +117,16 @@ BF_ALL_ADS_URL = BF_ALL_ADS_URLS[0]  # kept for anything referencing the old nam
 # `trip.summary` and has NOT been verified against the live service from here.
 BIKE_ROUTER_URL = "https://valhalla1.openstreetmap.de/route"
 
+# Sent on every outbound request. The contact URL is the point of it: a landlord
+# or a free API operator who doesn't want this traffic should be able to find the
+# person responsible and say so, rather than having to silently block an
+# anonymous scraper. It also satisfies Nominatim's usage policy, which asks for
+# an identifiable application with a way to make contact.
+PROJECT_URL = "https://github.com/ivarhak/Stockholm-Student-Housing-Finder"
+CONTACT_URL = PROJECT_URL + "/issues"
+USER_AGENT = (f"Stockholm-Student-Housing-Finder/1.0 (personal, non-commercial; "
+              f"contact: {CONTACT_URL})")
+
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 # Listings are stored per city — see listings_file(). CURRENT_FILE is the old
@@ -317,7 +327,7 @@ def geocode_area(name: str, cache: dict) -> tuple | None:
         resp = requests.get(
             "https://nominatim.openstreetmap.org/search",
             params={"q": query, "format": "json", "limit": 1},
-            headers={"User-Agent": "sssb-kth-commute-tool/1.0 (personal use)"},
+            headers={"User-Agent": USER_AGENT},
             timeout=10,
         )
         resp.raise_for_status()
@@ -407,7 +417,7 @@ def geocode_listing_address(address: str, area: str, cache: dict) -> list | None
         resp = requests.get(
             "https://nominatim.openstreetmap.org/search",
             params={"q": query, "format": "json", "limit": 1},
-            headers={"User-Agent": "sssb-kth-commute-tool/1.0 (personal use)"},
+            headers={"User-Agent": USER_AGENT},
             timeout=10,
         )
         resp.raise_for_status()
@@ -696,7 +706,7 @@ out center tags;
             resp = requests.post(
                 url,
                 data={"data": query},
-                headers={"User-Agent": "personal student-housing monitor"},
+                headers={"User-Agent": USER_AGENT},
                 timeout=120,
             )
             resp.raise_for_status()
@@ -848,7 +858,7 @@ def bike_route(origin: tuple, target: tuple) -> dict | None:
                 "costing": "bicycle",
                 "directions_options": {"units": "kilometers"},
             },
-            headers={"User-Agent": "sssb-kth-commute-tool/1.0 (personal use)"},
+            headers={"User-Agent": USER_AGENT},
             timeout=20,
         )
         resp.raise_for_status()
@@ -1425,10 +1435,14 @@ def fetch_sssb_http(debug: bool = False) -> list[dict] | None:
         resp = requests.get(
             LISTINGS_URL,
             headers={
-                # SSSB serves the list to logged-out visitors; a browser-ish UA
-                # just avoids being treated as a bot.
+                # Browser-shaped prefix so naive bot filters don't reject it,
+                # with our identity and contact URL appended — the conventional
+                # shape for a well-behaved crawler. Looking like a browser and
+                # being anonymous are different things, and only the first one is
+                # actually needed here.
                 "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"),
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               f"Chrome/126 Safari/537.36 {USER_AGENT}"),
                 "Accept-Language": "sv,en;q=0.8",
             },
             timeout=30,
@@ -1799,7 +1813,7 @@ def fetch_bostadsformedlingen() -> list[dict]:
             resp = requests.get(
                 url,
                 headers={
-                    "User-Agent": "Mozilla/5.0 (personal student-housing monitor)",
+                    "User-Agent": f"Mozilla/5.0 {USER_AGENT}",
                     "Accept": "application/json",
                     # The site's own page fetches this via XHR; some setups
                     # reject requests that don't look like they came from there.

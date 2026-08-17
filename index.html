@@ -1461,7 +1461,13 @@ function applyDataSourceChrome(){
       + (every ? ` every ${every} ${every === 1 ? 'hour' : 'hours'}` : ' a few times a day')
       + ' · unofficial view of <a href="https://sssb.se" target="_blank" rel="noopener noreferrer">sssb.se</a>'
       + ' + <a href="https://bostad.stockholm.se" target="_blank" rel="noopener noreferrer">bostad.stockholm.se</a>'
-      + ' — apply there.';
+      + ' — apply there.'
+      // A route for the other side. If a landlord would rather their listings
+      // weren't shown here, they should be able to say so without having to
+      // work out who runs this, and a takedown honoured quickly is the whole
+      // difference between a polite email and a problem.
+      + ' <a href="https://github.com/ivarhak/Stockholm-Student-Housing-Finder/issues"'
+      + ' target="_blank" rel="noopener noreferrer">Data owner? Get in touch.</a>';
   }
 }
 
