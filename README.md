@@ -439,4 +439,16 @@ all of them permissive but worth knowing if you fork this:
   pages for personal use and links every listing back to the source — it isn't
   affiliated with either, and you apply through them.
 
+## Roadmap
+
+**Next up: more student cities.** The scrape, the payload and the dashboard are
+already scoped per city — each one has its own registry entry, its own campuses
+and its own data file, and you pick a city from the URL (`…/#lund`). Stockholm is
+simply the only entry so far, which is why the picker stays out of the way.
+
+The plan is **Göteborg** and **Lund** next, each with its own housing providers
+and its own campus list — the smaller specialist colleges included, the way
+Stockholm lists Konstfack, KMH and KKH alongside KTH and SU, since those are
+exactly the places where which campus you measure from changes the answer.
+
 Made by IvarHak, hosted on GitHub, coded partially with the help of Claude Code
