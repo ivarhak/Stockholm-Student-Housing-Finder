@@ -656,6 +656,23 @@
   .route-line.route-South{stroke:var(--clay);}
   .route-line.route-City{stroke:var(--leaf);}
 
+  /* Says what a city's data covers, and what it doesn't. Every city needs one:
+     none of them is the whole market, and a dashboard that stays quiet about it
+     reads as "there is nothing else". */
+  #coverageNote{
+    margin:14px 16px 4px;
+    padding:10px 12px;
+    background:var(--card);
+    border:1px solid var(--rule);
+    border-left:2px solid var(--ochre);
+    border-radius:3px;
+    font-family:var(--mono);
+    font-size:10.5px;
+    line-height:1.55;
+    color:var(--dim);
+  }
+  #coverageNote[hidden]{display:none;}
+
   /* ── City picker ─────────────────────────────────────────
      Both of these are hidden while only one city exists, so nothing here
      renders until a second one ships. */
@@ -1043,6 +1060,7 @@
       <div id="listings"></div>
     </div>
     <div id="queues">
+      <div id="coverageNote" hidden></div>
       <div class="queue-card">
         <h3><span class="provider-tag sssb" style="margin:0;">SSSB</span> SSSB queue</h3>
         <div class="covers">Covers: all SSSB areas (Lappkärrsberget, Jerum, Kungshamra, …)</div>
@@ -1377,6 +1395,11 @@ function applyCityChrome(){
   const name = (currentData && currentData.city_name)
     || (cityIndex.cities[currentCity] || {}).name || '';
   if (many && name) document.getElementById('cityBtnLabel').textContent = name;
+
+  const cov = document.getElementById('coverageNote');
+  const note = currentData && currentData.coverage_note;
+  cov.hidden = !note;
+  if (note) cov.textContent = note;
 
   const preferred = currentData && currentData.max_commute_default;
   if (preferred && !commuteTouched) {
@@ -1944,6 +1967,18 @@ function sortListings(rows){
   });
 }
 
+// The badge is worth hovering now that it means "appeared recently" rather than
+// "wasn't in the previous scrape" — so say when, and over what window.
+function newTagTitle(l){
+  const hours = (currentData && currentData.new_window_hours) || 24;
+  if (!l.first_seen) return `New in the last ${hours}h`;
+  const mins = Math.max(0, Math.round((Date.now() - new Date(l.first_seen)) / 60000));
+  const ago = mins < 60 ? `${mins} min ago`
+            : mins < 1440 ? `${Math.round(mins / 60)}h ago`
+            : `${Math.round(mins / 1440)}d ago`;
+  return `First seen ${ago} — listings stay marked NEW for ${hours}h`;
+}
+
 function rowHtml(l, newIds){
   const commuteRef = l.provider === 'SSSB' ? (currentData.areas[l.area] || {}) : l;
   const cm = schoolMetrics(commuteRef);
@@ -1972,7 +2007,7 @@ function rowHtml(l, newIds){
     ? (near.distance_m / 1000).toFixed(1) + ' km' : near.distance_m + ' m'} away`);
   return `
     <div class="listing-row" onclick="handleRowClick('${l.id.replace(/'/g,"\\'")}')">
-      ${newIds.has(l.id) ? '<span class="new-tag">NEW</span>' : ''}
+      ${newIds.has(l.id) ? `<span class="new-tag" title="${newTagTitle(l)}">NEW</span>` : ''}
       <div class="row-top">
         <span class="area-name">${title}</span>
         <span class="queue-badge">${badgeFor(l)}</span>

@@ -82,6 +82,7 @@ jobs:
         with:
           path: |
             data/bike_route_cache.json
+            data/current_listings.json
             data/current_listings_*.json
             data/address_cache.json
             data/grocery_cache.json
@@ -162,6 +163,7 @@ jobs:
         with:
           path: |
             data/bike_route_cache.json
+            data/current_listings.json
             data/current_listings_*.json
             data/address_cache.json
             data/grocery_cache.json

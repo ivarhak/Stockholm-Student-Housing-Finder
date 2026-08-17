@@ -356,6 +356,20 @@ ADDRESS_CACHE_FILE = DATA_DIR / "address_cache.json"
 # address and nowhere near a same-name street in another municipality.
 MAX_ADDRESS_OFFSET_M = 3000
 
+# How long a listing counts as NEW after we first saw it.
+#
+# This used to be "not present in the previous run's file", which sounds
+# equivalent and isn't. That definition makes *everything* new whenever the
+# history is missing — a fresh Actions runner, a fresh clone, a cache miss, a
+# renamed state file — so the badge fired on all ~170 rows at once and carried no
+# information at all. It also expired after exactly one scrape cycle, so a
+# listing that appeared 20 minutes after you last looked was already unbadged.
+#
+# A timestamp fixes both. `first_seen` is carried forward across runs, so the
+# badge means "appeared in the last day" no matter how many times we scraped in
+# between, and losing the history can no longer invent 170 new listings.
+NEW_WINDOW_HOURS = 24
+
 
 def _load_address_cache() -> dict:
     if ADDRESS_CACHE_FILE.exists():
@@ -430,6 +444,20 @@ def drop_misplaced_addresses(listings: list, area_info: dict) -> dict:
             misplaced[l.get("address")] = (l.get("area"), off_m)
             l["coords"] = None
     return misplaced
+
+
+def _seen_recently(first_seen, now, hours: float = NEW_WINDOW_HOURS) -> bool:
+    """Was this first seen within the window? None means "already there when we
+    started looking" — deliberately not new, so a cold start badges nothing."""
+    if not first_seen:
+        return False
+    try:
+        seen = datetime.fromisoformat(first_seen)
+    except (TypeError, ValueError):
+        return False
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    return (now - seen).total_seconds() < hours * 3600
 
 
 def area_spread_m(coords_list: list) -> int:
@@ -514,6 +542,15 @@ CITIES = {
         "area_addresses": AREA_ADDRESSES,
         "area_aliases": AREA_ALIASES,
         "providers": ["SSSB", "Bostadsförmedlingen"],
+        # What this city's data does and doesn't cover, shown on the page. Every
+        # city needs one: none of them is the whole market, and a dashboard that
+        # doesn't say so reads as "there is nothing else", which is worse than
+        # saying "there is more, but not here". Lund's will have to name LKF,
+        # whose student stock has no findable public vacancy list (checked
+        # 2026-08-09), and Göteborg's that SGS publishes no queue figure.
+        "coverage_note": "Covers SSSB and Bostadsförmedlingen (which is also where "
+                         "Svenska Bostäder's student flats are advertised). Other "
+                         "Stockholm landlords aren't included.",
         "grocery_bbox": GROCERY_BBOX,
         # What the dashboard's max-commute slider opens at.
         "max_commute_default": 45,
@@ -1928,7 +1965,6 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     conf = city_conf(city)
     print(f"[{datetime.now().isoformat(timespec='seconds')}] starting {conf['name']} scrape...")
     previous = load_previous(city)
-    previous_ids = {l["id"] for l in previous["listings"]}
 
     geocode_cache = _load_geocode_cache()
     grocery_stores, grocery_notes = fetch_grocery_stores(conf["grocery_bbox"])
@@ -2088,9 +2124,37 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
 
     listings = sssb_listings + bf_listings
 
-    new_listings = [l for l in listings if l["id"] not in previous_ids]
+    # Carry each listing's first-seen timestamp forward, then derive NEW from it.
+    # With no usable history at all, every listing is recorded as first_seen=None
+    # — "was already there when we started looking" — because never having looked
+    # before is not the same thing as 170 listings having just appeared. That is
+    # the case that used to badge, and notify about, the entire list.
+    now = datetime.now(timezone.utc)
+    had_history = bool(previous.get("generated_at"))
+    prev_seen = {l["id"]: l.get("first_seen") for l in previous["listings"]}
+    for l in listings:
+        if not had_history:
+            l["first_seen"] = None
+        elif l["id"] in prev_seen:
+            # Whatever was recorded stands — *including* None, which means "was
+            # already listed before we started keeping track". Testing the value
+            # rather than the key here (`prev_seen.get(id) or now`) is a live bug
+            # I wrote and the test caught: None is falsy, so every cold-start
+            # listing got restamped "first seen now" on the very next run and the
+            # badge came back on all 63 rows.
+            l["first_seen"] = prev_seen[l["id"]]
+        else:
+            l["first_seen"] = now.isoformat()
+    new_listings = [l for l in listings if _seen_recently(l["first_seen"], now)]
     print(f"found {len(listings)} listings total — {len(sssb_listings)} SSSB, "
-          f"{len(bf_listings)} Bostadsförmedlingen ({len(new_listings)} new)")
+          f"{len(bf_listings)} Bostadsförmedlingen")
+    if not had_history:
+        print(f"  no previous run to compare against, so none are marked new — "
+              f"all {len(listings)} are recorded as first seen now")
+    else:
+        first_time = sum(1 for l in listings if l["first_seen"] == now.isoformat())
+        print(f"  new: {len(new_listings)} first seen in the last "
+              f"{NEW_WINDOW_HOURS:g}h ({first_time} of them this run)")
 
     routed = sum(1 for a in area_info.values()
                  if a["per_school"]
@@ -2116,6 +2180,10 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         "city": city,
         "city_name": conf["name"],
         "max_commute_default": conf.get("max_commute_default", 45),
+        "coverage_note": conf.get("coverage_note"),
+        # So the badge's tooltip can say what NEW actually means rather than the
+        # number living in two places.
+        "new_window_hours": NEW_WINDOW_HOURS,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "kth_coords": KTH_COORDS,
         # The dashboard builds its campus dropdown from this, so the two lists
