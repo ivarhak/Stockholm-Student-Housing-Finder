@@ -119,7 +119,9 @@ BIKE_ROUTER_URL = "https://valhalla1.openstreetmap.de/route"
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
-CURRENT_FILE = DATA_DIR / "current_listings.json"
+# Listings are stored per city — see listings_file(). CURRENT_FILE is the old
+# single-city name, kept only so _legacy_listings_file() can read it once on the
+# way past; nothing writes to it any more.
 GEOCODE_CACHE_FILE = DATA_DIR / "geocode_cache.json"
 BIKE_ROUTE_CACHE_FILE = DATA_DIR / "bike_route_cache.json"
 GROCERY_CACHE_FILE = DATA_DIR / "grocery_cache.json"
@@ -488,6 +490,91 @@ GROCERY_CHAINS = {
 }
 
 
+# ── Cities ──────────────────────────────────────────────────────────────
+#
+# One entry per city the dashboard can show. It lives down here, below the
+# grocery constants, purely because it references GROCERY_BBOX — conceptually it
+# belongs with the city constants at the top of the file.
+#
+# Stockholm's entry points at the existing constants rather than copying them,
+# so introducing the registry changed nothing about how Stockholm is scraped.
+# A second city brings its own areas, schools and providers and adds an entry;
+# it does not edit Stockholm's.
+#
+# Each city carries its own slider defaults, because the three cities are
+# genuinely different shapes: a 45-minute commute limit is a real filter in
+# Stockholm, where the areas span 30 km, and would hide precisely nothing in
+# Lund, where the whole city is a fifteen-minute bike ride.
+CITIES = {
+    "stockholm": {
+        "name": "Stockholm",
+        "schools": SCHOOLS,
+        "default_school": DEFAULT_SCHOOL,
+        "areas": AREAS,
+        "area_addresses": AREA_ADDRESSES,
+        "area_aliases": AREA_ALIASES,
+        "providers": ["SSSB", "Bostadsförmedlingen"],
+        "grocery_bbox": GROCERY_BBOX,
+        # What the dashboard's max-commute slider opens at.
+        "max_commute_default": 45,
+    },
+}
+DEFAULT_CITY = "stockholm"
+
+
+def city_conf(city: str) -> dict:
+    """A city's registry entry, or a clear error naming the ones that exist."""
+    try:
+        return CITIES[city]
+    except KeyError:
+        raise SystemExit(
+            f"unknown city {city!r} — known cities: {', '.join(sorted(CITIES))}")
+
+
+def listings_file(city: str) -> Path:
+    return DATA_DIR / f"current_listings_{city}.json"
+
+
+def _legacy_listings_file() -> Path:
+    """The single-city filename, from before the registry existed.
+
+    Read once as a fallback so the first run after this change doesn't find an
+    empty history and tag all ~170 listings as NEW — which is exactly what the
+    Actions cache exists to prevent. Never written to.
+    """
+    return DATA_DIR / "current_listings.json"
+
+
+def write_cities_index():
+    """data/cities.json — what the dashboard's city picker reads.
+
+    Built by looking at the city files actually on disk rather than from CITIES
+    alone, so a city that has never scraped successfully doesn't appear as an
+    empty option. Small on purpose: the picker needs a name and a count, not a
+    payload.
+    """
+    index = {}
+    for cid, conf in CITIES.items():
+        path = listings_file(cid)
+        if not path.exists() and cid == DEFAULT_CITY:
+            path = _legacy_listings_file()
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (ValueError, OSError):
+            continue
+        index[cid] = {
+            "name": conf["name"],
+            "providers": conf["providers"],
+            "listings": len(data.get("listings") or []),
+            "generated_at": data.get("generated_at"),
+        }
+    (DATA_DIR / "cities.json").write_text(json.dumps(
+        {"default": DEFAULT_CITY, "cities": index}, indent=2, ensure_ascii=False))
+    return index
+
+
 def _host(url: str) -> str:
     """Just the hostname, for a summary line that has to stay one line."""
     return urlsplit(url).netloc or url
@@ -536,7 +623,7 @@ def _load_grocery_cache() -> tuple[list | None, bool]:
     return stores, True
 
 
-def fetch_grocery_stores() -> tuple[list[dict], list[str]]:
+def fetch_grocery_stores(bbox: tuple | None = None) -> tuple[list[dict], list[str]]:
     """Chain supermarkets in greater Stockholm, as ([{name, chain, coords}], notes).
 
     Never fatal: the map is perfectly usable without shop dots, so any failure
@@ -552,7 +639,7 @@ def fetch_grocery_stores() -> tuple[list[dict], list[str]]:
         return cached, [f"{len(cached)} from the on-disk cache"]
     notes = []
 
-    south, west, north, east = GROCERY_BBOX
+    south, west, north, east = bbox or GROCERY_BBOX
     bbox = f"{south},{west},{north},{east}"
     # `out center` so ways (a supermarket mapped as a building outline rather
     # than a point) still come back with a single coordinate.
@@ -747,9 +834,14 @@ def bike_route(origin: tuple, target: tuple) -> dict | None:
 
 
 def commute_to_all_schools(coords: tuple, with_transit: bool = True,
-                           with_bike_routes: bool = True) -> dict:
+                           with_bike_routes: bool = True,
+                           schools: dict | None = None) -> dict:
     """Distance/bike/walk (and transit, if a Resrobot key is set) from `coords`
-    to every campus in SCHOOLS, keyed by short name.
+    to every campus in `schools` (default: Stockholm's), keyed by short name.
+
+    `schools` is the city's own campus list, deliberately — measuring every area
+    against every campus in the country would be both nonsense and quadratic.
+    Nobody in Lund wants a commute time to KTH.
 
     The dashboard's campus dropdown reads this, so switching schools re-filters
     and re-sorts against real numbers rather than re-using KTH's.
@@ -760,7 +852,7 @@ def commute_to_all_schools(coords: tuple, with_transit: bool = True,
     `--interval` if you start hitting Trafiklab's quota.
     """
     out = {}
-    for sid, school in SCHOOLS.items():
+    for sid, school in (schools or SCHOOLS).items():
         target = school["coords"]
         est = straight_line_estimate(coords, target)
         route = bike_route(coords, target) if with_bike_routes else None
@@ -1413,13 +1505,19 @@ def scrape_listings(driver, debug: bool = False) -> list[dict]:
 
 # ── Diff + notifications ─────────────────────────────────────────────────
 
-def load_previous() -> dict:
-    if CURRENT_FILE.exists():
-        return json.loads(CURRENT_FILE.read_text())
+def load_previous(city: str = DEFAULT_CITY) -> dict:
+    for path in (listings_file(city),
+                 # One-time migration path: see _legacy_listings_file().
+                 _legacy_listings_file() if city == DEFAULT_CITY else None):
+        if path and path.exists():
+            try:
+                return json.loads(path.read_text())
+            except (ValueError, OSError):
+                continue
     return {"listings": [], "generated_at": None}
 
 
-def saved_data_age_minutes() -> float | None:
+def saved_data_age_minutes(city: str = DEFAULT_CITY) -> float | None:
     """How old the saved listings are, or None if there aren't any / the
     timestamp is unreadable.
 
@@ -1429,10 +1527,8 @@ def saved_data_age_minutes() -> float | None:
     poll came round — up to `--interval` minutes of quietly showing stale
     listings with a timestamp that looked fine.
     """
-    if not CURRENT_FILE.exists():
-        return None
     try:
-        generated_at = json.loads(CURRENT_FILE.read_text()).get("generated_at")
+        generated_at = load_previous(city).get("generated_at")
         saved = datetime.fromisoformat(generated_at)
     except (ValueError, TypeError, OSError):
         return None
@@ -1819,21 +1915,23 @@ def fetch_bostadsformedlingen() -> list[dict]:
 
 def run_scrape(debug: bool = False, use_login: bool = False,
                http_only: bool = False, bike_routes: bool = True,
-               bf_bike_routes: bool = False) -> dict:
+               bf_bike_routes: bool = False, city: str = DEFAULT_CITY) -> dict:
     with _scrape_lock:
         return _run_scrape_impl(debug=debug, use_login=use_login, http_only=http_only,
-                                bike_routes=bike_routes, bf_bike_routes=bf_bike_routes)
+                                bike_routes=bike_routes, bf_bike_routes=bf_bike_routes,
+                                city=city)
 
 
 def _run_scrape_impl(debug: bool = False, use_login: bool = False,
                      http_only: bool = False, bike_routes: bool = True,
-                     bf_bike_routes: bool = False) -> dict:
-    print(f"[{datetime.now().isoformat(timespec='seconds')}] starting scrape...")
-    previous = load_previous()
+                     bf_bike_routes: bool = False, city: str = DEFAULT_CITY) -> dict:
+    conf = city_conf(city)
+    print(f"[{datetime.now().isoformat(timespec='seconds')}] starting {conf['name']} scrape...")
+    previous = load_previous(city)
     previous_ids = {l["id"] for l in previous["listings"]}
 
     geocode_cache = _load_geocode_cache()
-    grocery_stores, grocery_notes = fetch_grocery_stores()
+    grocery_stores, grocery_notes = fetch_grocery_stores(conf["grocery_bbox"])
     if not grocery_stores and previous.get("groceries"):
         # Last line of defence: a lookup that failed with no cache on disk would
         # otherwise publish a payload with no shops, and the dashboard hides its
@@ -1844,14 +1942,15 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         grocery_notes.append(f"reused {len(grocery_stores)} from the previous run")
     print("geocoding areas (cached after first run)...")
     if bike_routes:
-        print(f"working out cycling routes to {len(SCHOOLS)} campuses "
+        print(f"working out cycling routes to {len(conf['schools'])} campuses "
               "(real bike directions, cached to data/bike_route_cache.json — "
               "the first run is slow, later ones aren't)...")
     area_info = {}
-    for group, names in AREAS.items():
+    for group, names in conf["areas"].items():
         for name in names:
             coords = geocode_area(name, geocode_cache)
-            per_school = (commute_to_all_schools(coords, with_bike_routes=bike_routes)
+            per_school = (commute_to_all_schools(coords, with_bike_routes=bike_routes,
+                                                 schools=conf["schools"])
                           if coords else None)
             area_info[name] = {
                 "group": group,
@@ -1861,7 +1960,8 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
                 # Kept at the top level too, pointing at the default campus, so
                 # older saved files and any code reading the old shape still work.
                 "straight_line": straight_line_estimate(coords) if coords else None,
-                "transit_min": per_school[DEFAULT_SCHOOL]["transit_min"] if per_school else None,
+                "transit_min": (per_school[conf["default_school"]]["transit_min"]
+                                if per_school else None),
                 # One number beats 300 map dots for "can I buy food here" — the
                 # dots are for browsing, this is for deciding.
                 "nearest_grocery": (nearest_grocery(coords, grocery_stores)
@@ -1981,9 +2081,10 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     for l in bf_listings:
         if l["coords"]:
             l["per_school"] = commute_to_all_schools(
-                tuple(l["coords"]), with_bike_routes=bike_routes and bf_bike_routes)
+                tuple(l["coords"]), with_bike_routes=bike_routes and bf_bike_routes,
+                schools=conf["schools"])
             l["straight_line"] = straight_line_estimate(tuple(l["coords"]))
-            l["transit_min"] = l["per_school"][DEFAULT_SCHOOL]["transit_min"]
+            l["transit_min"] = l["per_school"][conf["default_school"]]["transit_min"]
 
     listings = sssb_listings + bf_listings
 
@@ -1992,7 +2093,8 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
           f"{len(bf_listings)} Bostadsförmedlingen ({len(new_listings)} new)")
 
     routed = sum(1 for a in area_info.values()
-                 if a["per_school"] and a["per_school"][DEFAULT_SCHOOL]["bike_source"] == "route")
+                 if a["per_school"]
+                 and a["per_school"][conf["default_school"]]["bike_source"] == "route")
     if bike_routes:
         print(f"bike times: {routed} of {len(area_info)} area(s) from real cycling routes, "
               f"{len(area_info) - routed} from the straight-line estimate")
@@ -2009,13 +2111,18 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         print(f"shops: none — the dashboard's Shops toggle will be hidden{trail}")
 
     result = {
+        # Which city this payload is, so the dashboard can't render one city's
+        # listings under another's name after a switch.
+        "city": city,
+        "city_name": conf["name"],
+        "max_commute_default": conf.get("max_commute_default", 45),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "kth_coords": KTH_COORDS,
         # The dashboard builds its campus dropdown from this, so the two lists
         # can't drift apart.
         "schools": {sid: {"name": sc["name"], "coords": list(sc["coords"])}
-                    for sid, sc in SCHOOLS.items()},
-        "default_school": DEFAULT_SCHOOL,
+                    for sid, sc in conf["schools"].items()},
+        "default_school": conf["default_school"],
         "areas": area_info,
         "listings": listings,
         # Chain supermarkets, for the map's optional shop dots. Sent as a flat
@@ -2023,7 +2130,8 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         "groceries": grocery_stores,
         "new_listing_ids": [l["id"] for l in new_listings],
     }
-    CURRENT_FILE.write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    listings_file(city).write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    write_cities_index()
     notify_new(new_listings)
     return result
 
@@ -2032,21 +2140,27 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
 
 def _background_poll_loop(interval_minutes: float, use_login: bool = False,
                           http_only: bool = False, bike_routes: bool = True,
-                          bf_bike_routes: bool = False):
+                          bf_bike_routes: bool = False, cities=None):
     """Runs for the lifetime of `--serve`, re-scraping on its own so you
     don't have to sit there clicking Refresh. Any failure (SSSB hiccup,
     network blip) is logged and skipped rather than killing the loop.
+
+    Each city is caught separately: one city's provider being down must not
+    stop the others from refreshing, the same way a failure here has always
+    been logged and skipped rather than killing the loop.
     """
     while True:
         time.sleep(interval_minutes * 60)
-        try:
-            print(f"[{datetime.now().isoformat(timespec='seconds')}] auto-check...")
-            run_scrape(use_login=use_login, http_only=http_only, bike_routes=bike_routes,
-                       bf_bike_routes=bf_bike_routes)
-        except SystemExit as e:
-            print(f"  ! auto-check stopped early: {e}")
-        except Exception as e:
-            print(f"  ! auto-check failed, will retry next interval: {e}")
+        for city in (cities or [DEFAULT_CITY]):
+            try:
+                print(f"[{datetime.now().isoformat(timespec='seconds')}] "
+                      f"auto-check ({city})...")
+                run_scrape(use_login=use_login, http_only=http_only, bike_routes=bike_routes,
+                           bf_bike_routes=bf_bike_routes, city=city)
+            except SystemExit as e:
+                print(f"  ! {city} auto-check stopped early: {e}")
+            except Exception as e:
+                print(f"  ! {city} auto-check failed, will retry next interval: {e}")
 
 
 def _port_in_use(port: int = None) -> bool:
@@ -2088,7 +2202,8 @@ def _open_browser_when_ready(timeout: float = 20.0):
 
 def serve(interval_minutes: float, use_login: bool = False,
           http_only: bool = False, bike_routes: bool = True,
-          bf_bike_routes: bool = False, open_browser: bool = True):
+          bf_bike_routes: bool = False, open_browser: bool = True,
+          cities=None):
     from flask import Flask, jsonify, send_from_directory
     from flask_cors import CORS
 
@@ -2101,14 +2216,29 @@ def serve(interval_minutes: float, use_login: bool = False,
     def index():
         return send_from_directory(static_dir, "index.html")
 
+    def _requested_city():
+        """?city=<id>, falling back to the default. An unknown id falls back
+        rather than erroring — a stale bookmark should show *something*."""
+        from flask import request
+        asked = request.args.get("city") or DEFAULT_CITY
+        return asked if asked in CITIES else DEFAULT_CITY
+
+    @app.route("/api/cities")
+    def api_cities():
+        """What the city picker reads. Rebuilt on request rather than served
+        from disk, so a city scraped after startup appears without a restart."""
+        return jsonify({"default": DEFAULT_CITY, "cities": write_cities_index()})
+
     @app.route("/api/listings")
     def api_listings():
-        if CURRENT_FILE.exists():
-            data = json.loads(CURRENT_FILE.read_text())
-            data["poll_interval_min"] = interval_minutes
-            return jsonify(data)
+        city = _requested_city()
+        saved = load_previous(city)
+        if saved.get("generated_at"):
+            saved["poll_interval_min"] = interval_minutes
+            return jsonify(saved)
         return jsonify(run_scrape(use_login=use_login, http_only=http_only,
-                                  bike_routes=bike_routes, bf_bike_routes=bf_bike_routes))
+                                  bike_routes=bike_routes, bf_bike_routes=bf_bike_routes,
+                                  city=city))
 
     @app.route("/api/status")
     def api_status():
@@ -2117,12 +2247,7 @@ def serve(interval_minutes: float, use_login: bool = False,
         Data only changes once per --interval, so the vast majority of those
         polls used to transfer and re-render an identical payload.
         """
-        generated_at = None
-        if CURRENT_FILE.exists():
-            try:
-                generated_at = json.loads(CURRENT_FILE.read_text()).get("generated_at")
-            except ValueError:
-                pass
+        generated_at = load_previous(_requested_city()).get("generated_at")
         return jsonify({"generated_at": generated_at,
                         "poll_interval_min": interval_minutes,
                         # Whether a scrape is running right now, so the dashboard
@@ -2136,10 +2261,12 @@ def serve(interval_minutes: float, use_login: bool = False,
     @app.route("/api/refresh", methods=["POST"])
     def api_refresh():
         return jsonify(run_scrape(use_login=use_login, http_only=http_only,
-                                  bike_routes=bike_routes, bf_bike_routes=bf_bike_routes))
+                                  bike_routes=bike_routes, bf_bike_routes=bf_bike_routes,
+                                  city=_requested_city()))
 
     threading.Thread(target=_background_poll_loop,
-                     args=(interval_minutes, use_login, http_only, bike_routes, bf_bike_routes),
+                     args=(interval_minutes, use_login, http_only, bike_routes,
+                           bf_bike_routes, cities or [DEFAULT_CITY]),
                      daemon=True).start()
 
     if open_browser:
@@ -2181,7 +2308,16 @@ if __name__ == "__main__":
     parser.add_argument("--no-login", action="store_true",
                         help="(now the default; accepted for compatibility and does nothing)")
     parser.add_argument("--debug", action="store_true", help="run visible browser + dump debug_page.html")
+    parser.add_argument("--city", default=None,
+                        help=f"which city to scrape: {', '.join(sorted(CITIES))} "
+                             f"(default: all of them). The dashboard shows one at a time and "
+                             f"picks with the #city part of its URL")
     args = parser.parse_args()
+    # A city each, unless one was named. --once with no --city scrapes every
+    # city, which is what the publish workflow wants.
+    scrape_cities = [args.city] if args.city else list(CITIES)
+    for _c in scrape_cities:
+        city_conf(_c)   # fail fast on a typo, before a minute of scraping
 
     if args.forget_login:
         forget_credentials()
@@ -2189,9 +2325,26 @@ if __name__ == "__main__":
         _prompt_and_store()
         print("Done — future runs will use this automatically.")
     elif args.once:
-        run_scrape(debug=args.debug, use_login=args.with_login,
-                   http_only=args.http_only, bike_routes=not args.no_bike_routes,
-                   bf_bike_routes=args.bike_routes_bf)
+        # Each city is scraped in its own try, so one city's provider being down
+        # still publishes the others. The exit code stays non-zero if *every*
+        # city failed, which is the cron contract: a totally failed run must not
+        # look green.
+        failed = []
+        for _c in scrape_cities:
+            try:
+                run_scrape(debug=args.debug, use_login=args.with_login,
+                           http_only=args.http_only, bike_routes=not args.no_bike_routes,
+                           bf_bike_routes=args.bike_routes_bf, city=_c)
+            except SystemExit:
+                raise            # --http-only's "fail loudly" contract
+            except Exception as e:
+                failed.append(_c)
+                print(f"  ! {_c} scrape failed: {e}")
+        if failed and len(failed) == len(scrape_cities):
+            raise SystemExit(f"every city failed to scrape ({', '.join(failed)})")
+        if failed:
+            print(f"note: {', '.join(failed)} failed; the other "
+                  f"{len(scrape_cities) - len(failed)} still published")
     # Anything else — `--serve`, or no arguments at all — serves. Bare
     # `python monitor.py` used to print help and exit 1, which made the
     # one mode you want every day the one you had to remember a flag for.
@@ -2229,9 +2382,10 @@ if __name__ == "__main__":
             # SystemExit is deliberately not caught: that's --http-only's
             # explicit "fail loudly" contract.
             try:
-                run_scrape(debug=args.debug, use_login=args.with_login,
-                           http_only=args.http_only, bike_routes=not args.no_bike_routes,
-                           bf_bike_routes=args.bike_routes_bf)
+                for _c in scrape_cities:
+                    run_scrape(debug=args.debug, use_login=args.with_login,
+                               http_only=args.http_only, bike_routes=not args.no_bike_routes,
+                               bf_bike_routes=args.bike_routes_bf, city=_c)
             except Exception as e:
                 print(f"\n  ! the startup scrape failed ({type(e).__name__}: {e})")
                 if age is None:
@@ -2243,4 +2397,5 @@ if __name__ == "__main__":
                       f"{args.interval:g} min, or hit \"Refresh\" in the dashboard.\n")
         serve(interval_minutes=args.interval, use_login=args.with_login,
               http_only=args.http_only, bike_routes=not args.no_bike_routes,
-              bf_bike_routes=args.bike_routes_bf, open_browser=not args.no_browser)
+              bf_bike_routes=args.bike_routes_bf, open_browser=not args.no_browser,
+              cities=scrape_cities)

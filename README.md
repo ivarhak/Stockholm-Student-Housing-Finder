@@ -295,6 +295,12 @@ with "Start in" set to this folder.
   nothing available (or nothing matching your filters) right now. The
   **SSSB lines** chips filter by those same three groups, which are SSSB's own
   grouping of its areas rather than anything invented here.
+- **Built for more than one city.** The scrape, the payload and the dashboard are
+  all scoped to a city: `--city` picks one (omit it to do all of them), each gets
+  its own `data/current_listings_<city>.json`, and the page reads the city from
+  the URL fragment (`…/#lund`) so a choice is bookmarkable without any storage.
+  Stockholm is the only city so far, so the picker and the header's city button
+  hide themselves — a control that can't change anything is worse than none.
 - **Works on a phone.** Below 760px wide (or on a short landscape screen) the
   two-pane layout stacks into one scrolling page: map first, then the filters,
   then the listings. The filter strip becomes two columns with full-width

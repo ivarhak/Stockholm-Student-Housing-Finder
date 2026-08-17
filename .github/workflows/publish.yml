@@ -62,9 +62,10 @@ jobs:
       #    from a free community Valhalla instance. Cold, that's ~180 paced
       #    requests taking ~2.5 min. The areas never move, so re-fetching them
       #    every two hours would be rude and pointless.
-      #  · current_listings.json — the previous run's listings, which is what
-      #    new-listing diffing compares against. Without it every run would mark
-      #    all ~170 listings as NEW, since the runner starts empty each time.
+      #  · current_listings_*.json — the previous run's listings, one file per
+      #    city, which is what new-listing diffing compares against. Without them
+      #    every run would mark all ~170 listings as NEW, since the runner starts
+      #    empty each time.
       #  · address_cache.json — the ~43 building addresses behind the per-listing
       #    map dots. Nominatim asks for 1 req/sec and no bulk geocoding; without
       #    this the runner would re-look-up all of them every two hours, which
@@ -81,7 +82,7 @@ jobs:
         with:
           path: |
             data/bike_route_cache.json
-            data/current_listings.json
+            data/current_listings_*.json
             data/address_cache.json
             data/grocery_cache.json
           key: sshf-scrape-cache-
@@ -95,37 +96,60 @@ jobs:
         # needs the new UI deployed against the listings we already have. Hitting
         # SSSB again for that would be a scrape nobody asked for.
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && [ -f data/current_listings.json ]; then
+          if [ "${{ github.event_name }}" = "push" ] && ls data/current_listings_*.json >/dev/null 2>&1; then
             echo "UI-only push, and the cache already has listings — redeploying without scraping."
           else
             python monitor.py --once
           fi
 
       - name: Assemble the site
+        # One payload file per city, plus the small index the picker reads. The
+        # page only ever fetches the city it is showing, so adding cities doesn't
+        # grow what a visitor downloads.
         run: |
           mkdir -p _site
           cp index.html _site/index.html
           python - <<'PY'
-          import json, os, pathlib
-          data = json.loads(pathlib.Path("data/current_listings.json").read_text())
-          # Lets the page say "updates every N hours" without the number being
-          # written down twice.
-          data["update_every_hours"] = int(os.environ["UPDATE_EVERY_HOURS"])
-          pathlib.Path("_site/listings.json").write_text(
-              json.dumps(data, ensure_ascii=False))
-          n = len(data["listings"])
-          by = {}
-          for l in data["listings"]:
-              by[l["provider"]] = by.get(l["provider"], 0) + 1
-          print(f"publishing {n} listings — {by}")
-          print(f"generated_at {data['generated_at']}")
-          print(f"new this run: {len(data.get('new_listing_ids') or [])}")
-          # Printed from the payload that's actually being deployed, not from the
-          # scrape's own report, so this is the last word on whether the Shops
-          # toggle will exist on the published page. A run that quietly shipped
-          # zero shops used to look exactly like a healthy one from here.
-          shops = len(data.get("groceries") or [])
-          print(f"shops: {shops}" + (" — the Shops toggle will be hidden" if not shops else ""))
+          import json, os, pathlib, sys
+          sys.path.insert(0, ".")
+          from monitor import CITIES, DEFAULT_CITY, listings_file
+
+          every = int(os.environ["UPDATE_EVERY_HOURS"])
+          index, published = {}, 0
+          for cid, conf in CITIES.items():
+              path = listings_file(cid)
+              if not path.exists():
+                  # A city whose scrape has never succeeded is left out of the
+                  # index entirely rather than offered as an empty option.
+                  print(f"{cid}: no data file — skipped")
+                  continue
+              data = json.loads(path.read_text())
+              # Lets the page say "updates every N hours" without the number
+              # being written down twice.
+              data["update_every_hours"] = every
+              pathlib.Path(f"_site/listings-{cid}.json").write_text(
+                  json.dumps(data, ensure_ascii=False))
+              published += 1
+              by = {}
+              for l in data["listings"]:
+                  by[l["provider"]] = by.get(l["provider"], 0) + 1
+              # Printed from the payload actually being deployed, not from the
+              # scrape's own report — the last word on what the page will show.
+              # A run that quietly shipped zero shops used to look exactly like
+              # a healthy one from here.
+              shops = len(data.get("groceries") or [])
+              print(f"{cid}: {len(data['listings'])} listings {by} · "
+                    f"shops: {shops}{' — Shops toggle hidden' if not shops else ''} · "
+                    f"generated_at {data['generated_at']} · "
+                    f"new this run: {len(data.get('new_listing_ids') or [])}")
+              index[cid] = {"name": conf["name"], "providers": conf["providers"],
+                            "listings": len(data["listings"]),
+                            "generated_at": data["generated_at"]}
+          if not published:
+              raise SystemExit("no city produced a payload — refusing to publish an empty site")
+          pathlib.Path("_site/cities.json").write_text(json.dumps(
+              {"default": DEFAULT_CITY, "cities": index}, ensure_ascii=False))
+          print(f"publishing {published} city/cities: {', '.join(index)}")
           PY
 
       - name: Save scrape caches
@@ -138,7 +162,7 @@ jobs:
         with:
           path: |
             data/bike_route_cache.json
-            data/current_listings.json
+            data/current_listings_*.json
             data/address_cache.json
             data/grocery_cache.json
           key: sshf-scrape-cache-${{ github.run_id }}

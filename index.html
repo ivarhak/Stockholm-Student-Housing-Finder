@@ -656,6 +656,68 @@
   .route-line.route-South{stroke:var(--clay);}
   .route-line.route-City{stroke:var(--leaf);}
 
+  /* ── City picker ─────────────────────────────────────────
+     Both of these are hidden while only one city exists, so nothing here
+     renders until a second one ships. */
+  #cityBtn{
+    display:flex;align-items:center;gap:6px;
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:0.03em;
+    color:var(--ink);
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:6px 12px 6px 10px;
+    cursor:pointer;
+  }
+  #cityBtn:hover{border-color:var(--leaf);}
+  #cityBtn:focus-visible{outline:2px solid var(--leaf);outline-offset:2px;}
+  #cityBtn[hidden]{display:none;}
+
+  #cityPicker{
+    position:fixed;inset:0;
+    /* Above Leaflet, whose control pane reaches 800 and shares the root
+       stacking context — the same reason the header carries z-index 1000. */
+    z-index:2000;
+    display:flex;align-items:center;justify-content:center;
+    padding:24px;
+    background:color-mix(in srgb, var(--bg) 88%, transparent);
+  }
+  #cityPicker[hidden]{display:none;}
+  .city-card{
+    width:100%;max-width:420px;
+    background:var(--panel);
+    border:1px solid var(--rule);
+    border-radius:6px;
+    padding:26px 24px 22px;
+  }
+  .city-card h2{
+    margin:0 0 6px;
+    font-size:19px;font-weight:800;
+    text-transform:uppercase;letter-spacing:0.01em;
+  }
+  .city-card p{
+    margin:0 0 18px;
+    font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--dim);
+  }
+  #cityOptions{display:flex;flex-direction:column;gap:8px;}
+  .city-option{
+    display:flex;flex-direction:column;gap:3px;
+    text-align:left;
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:4px;
+    padding:12px 14px;
+    cursor:pointer;
+    color:var(--ink);
+    transition:border-color .15s;
+  }
+  .city-option:hover{border-color:var(--leaf);}
+  .city-option:focus-visible{outline:2px solid var(--leaf);outline-offset:2px;}
+  .city-option .city-name{font-family:var(--display);font-weight:700;font-size:15px;}
+  .city-option .city-meta{font-family:var(--mono);font-size:10.5px;color:var(--dim);}
+
   /* ── Phones ──────────────────────────────────────────────
      Everything mobile lives in this one block, at the end of the sheet, so the
      desktop layout above is reached by exactly the rules it always was — a real
@@ -770,6 +832,18 @@
 
 <div id="banner"></div>
 
+<!-- Shown on first visit when the URL names no city and there's more than one
+     to choose from. Picking sets the fragment, which is what everything else
+     reads — so a chosen city is bookmarkable and survives a reload without any
+     storage. -->
+<div id="cityPicker" hidden>
+  <div class="city-card">
+    <h2>Which city?</h2>
+    <p>Pick where you're studying. You can change it any time from the header.</p>
+    <div id="cityOptions"></div>
+  </div>
+</div>
+
 <header>
   <div class="brand">
     <svg class="mark" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--teal)"
@@ -782,6 +856,18 @@
       <div class="sub" id="brandSub">SSSB + Bostadsförmedlingen · commutes to KTH</div>
     </div>
   </div>
+
+  <!-- Reopens the city picker. Hidden whenever there's only one city to pick,
+       same idiom as the Shops chip: a control that can't change anything is
+       worse than no control. It appears by itself once a second city ships. -->
+  <button id="cityBtn" hidden title="Change city">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 21s-7-5.5-7-11a7 7 0 1 1 14 0c0 5.5-7 11-7 11z"/>
+      <circle cx="12" cy="10" r="2.4"/>
+    </svg>
+    <span id="cityBtnLabel">Stockholm</span>
+  </button>
 
   <div class="links">
     <a id="siteLink" href="https://ivarhak.github.io/#work" target="_blank" rel="noopener noreferrer"
@@ -1082,6 +1168,10 @@ const METRO_LINES = [
 const activeGroups = new Set(['North','South','City']);
 const activeProviders = new Set(['SSSB','Bostadsförmedlingen']);
 let maxCommuteMin = 45;
+// Set once the *user* moves the commute slider, so switching city stops
+// overwriting a limit they chose. A city's default only applies while it is
+// still the default.
+let commuteTouched = false;
 // null = slider parked at its "no limit" end ("Any").
 let maxQueueDays = null;
 let maxRentSek = null;
@@ -1194,15 +1284,60 @@ function setRefreshing(on, mine){
 // is served from /<repo>/, not the root — an absolute '/listings.json' would
 // resolve against the domain and 404.
 let dataSource = 'demo';
-const STATIC_DATA_URL = './listings.json';
+
+// ── Which city ──────────────────────────────────────────────────────────
+//
+// The chosen city lives in the URL fragment (…/#lund), not in storage. Three
+// reasons, and the first is a hard constraint: this file gets previewed inside
+// sandboxed viewers where merely touching localStorage throws, which is why the
+// project bans it for anything functional. A fragment also makes a city
+// bookmarkable and shareable, and needs nothing from the static host.
+//
+// FALLBACK_CITIES covers the standalone/demo case, exactly like FALLBACK_SCHOOLS.
+const FALLBACK_CITIES = { default: 'stockholm',
+                          cities: { stockholm: { name: 'Stockholm',
+                                                 providers: ['SSSB', 'Bostadsförmedlingen'] } } };
+let cityIndex = FALLBACK_CITIES;
+let currentCity = null;
+
+function cityFromHash(){
+  const id = (location.hash || '').replace(/^#/, '').trim().toLowerCase();
+  return (id && cityIndex.cities[id]) ? id : null;
+}
+
+// Per-city payload files, so the page never holds more than one city's listings
+// and adding cities doesn't grow what every visitor downloads. Relative, because
+// a Pages *project* site is served from /<repo>/ — an absolute path would
+// resolve against the domain root and 404.
+const staticDataUrl = city => `./listings-${city}.json`;
+const apiListingsUrl = city => `/api/listings?city=${encodeURIComponent(city)}`;
+
+// The index is tiny (a name, a provider list and a count per city) and is what
+// the picker renders. Failing to load it is not fatal: with one city there is
+// nothing to pick, so the fallback is simply that city.
+async function loadCityIndex(){
+  for (const url of ['/api/cities', './cities.json']) {
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data && data.cities && Object.keys(data.cities).length) {
+        cityIndex = data;
+        return;
+      }
+    } catch (e) { /* try the next candidate */ }
+  }
+}
 
 async function loadData(triggerRefresh){
   if (triggerRefresh) {
     myRefreshInFlight = true;
     setRefreshing(true, true);
   }
+  const city = currentCity || cityIndex.default;
   try {
-    const url = triggerRefresh ? '/api/refresh' : '/api/listings';
+    const url = triggerRefresh
+      ? `/api/refresh?city=${encodeURIComponent(city)}` : apiListingsUrl(city);
     const res = await fetch(url, { method: triggerRefresh ? 'POST' : 'GET' });
     if (!res.ok) throw new Error('bad response');
     currentData = await res.json();
@@ -1211,7 +1346,7 @@ async function loadData(triggerRefresh){
     try {
       // no-store so a reload always sees what the last scheduled scrape wrote,
       // rather than whatever the CDN cached for this URL.
-      const res = await fetch(STATIC_DATA_URL, { cache: 'no-store' });
+      const res = await fetch(staticDataUrl(city), { cache: 'no-store' });
       if (!res.ok) throw new Error('no static data');
       currentData = await res.json();
       dataSource = 'static';
@@ -1222,12 +1357,69 @@ async function loadData(triggerRefresh){
     }
   }
   lastGeneratedAt = currentData.generated_at;
+  applyCityChrome();
   if (triggerRefresh) {
     myRefreshInFlight = false;
     setRefreshing(false);
   }
   applyDataSourceChrome();
   render();
+}
+
+// Header label, document title and the sliders whose sensible defaults differ
+// per city — a 45-minute commute cap is a real filter across Stockholm's 30 km
+// and would hide nothing in Lund.
+function applyCityChrome(){
+  const ids = Object.keys(cityIndex.cities);
+  const many = ids.length > 1;
+  const btn = document.getElementById('cityBtn');
+  btn.hidden = !many;
+  const name = (currentData && currentData.city_name)
+    || (cityIndex.cities[currentCity] || {}).name || '';
+  if (many && name) document.getElementById('cityBtnLabel').textContent = name;
+
+  const preferred = currentData && currentData.max_commute_default;
+  if (preferred && !commuteTouched) {
+    const slider = document.getElementById('maxCommute');
+    if (slider && Number(slider.value) !== preferred) {
+      slider.value = preferred;
+      slider.dispatchEvent(new Event('input'));
+    }
+  }
+}
+
+function openCityPicker(){
+  const box = document.getElementById('cityOptions');
+  box.innerHTML = '';
+  Object.entries(cityIndex.cities).forEach(([id, c]) => {
+    const b = document.createElement('button');
+    b.className = 'city-option';
+    b.type = 'button';
+    const bits = [];
+    if (c.listings != null) bits.push(`${c.listings} listing${c.listings === 1 ? '' : 's'}`);
+    if (c.providers && c.providers.length) bits.push(c.providers.join(' + '));
+    b.innerHTML = `<span class="city-name"></span><span class="city-meta"></span>`;
+    b.querySelector('.city-name').textContent = c.name;
+    b.querySelector('.city-meta').textContent = bits.join(' · ');
+    b.addEventListener('click', () => selectCity(id));
+    box.appendChild(b);
+  });
+  document.getElementById('cityPicker').hidden = false;
+  const first = box.querySelector('button');
+  if (first) first.focus();
+}
+
+function selectCity(id){
+  document.getElementById('cityPicker').hidden = true;
+  if (id === currentCity) return;
+  // Deliberately does NOT set currentCity here. Writing the fragment fires
+  // hashchange, and that handler is the single place a city change is applied —
+  // setting it first made the handler's `id !== currentCity` guard false, so
+  // the URL changed and the payload never reloaded. The one case with no event
+  // to wait for is a hash that already reads this city (a bogus-hash reload),
+  // which is why that branch loads directly.
+  if (cityFromHash() === id) { currentCity = id; loadData(false); }
+  else location.hash = id;
 }
 
 // Static builds have no server to ask for a re-scrape, so the Refresh button
@@ -1921,6 +2113,10 @@ document.getElementById('maxCommute').addEventListener('input', (e) => {
   document.getElementById('maxCommuteLabel').textContent = maxCommuteMin + ' min';
   render();
 });
+// A real pointer/keyboard interaction, as opposed to the synthetic `input`
+// event applyCityChrome() dispatches when it applies a city's own default.
+['pointerdown', 'keydown'].forEach(ev =>
+  document.getElementById('maxCommute').addEventListener(ev, () => { commuteTouched = true; }));
 
 // All of these treat one end of the slider as "no limit" rather than a
 // literal bound, so nothing is hidden until you actually pull one in: for a
@@ -2055,12 +2251,36 @@ document.getElementById('refreshBtn').addEventListener('click', () => {
 });
 document.getElementById('browseAllBtn').addEventListener('click', toggleBrowseAll);
 
+document.getElementById('cityBtn').addEventListener('click', openCityPicker);
+// Back/forward and our own writes both land here, so there is one path into a
+// city change rather than two that can disagree.
+window.addEventListener('hashchange', () => {
+  const id = cityFromHash();
+  if (id && id !== currentCity) {
+    currentCity = id;
+    document.getElementById('cityPicker').hidden = true;
+    loadData(false);
+  }
+});
+
 initMap();
-// The first load decides which data source we're on, and the poll behaves
-// differently per source — so let it finish before the first poll rather than
-// racing it. Without this, a static build fires one pointless /api/status on
-// load, before it knows there's no server to ask.
-const firstLoad = loadData(false);
+
+// The city has to be settled before the first fetch, since it decides *which*
+// payload to ask for. With one city there is nothing to choose, so the picker
+// never appears and this is invisible — it starts mattering when a second city
+// ships.
+const firstLoad = (async () => {
+  await loadCityIndex();
+  const ids = Object.keys(cityIndex.cities);
+  currentCity = cityFromHash() || (ids.length === 1 ? ids[0] : null);
+  if (!currentCity) {
+    openCityPicker();
+    // Show the default city behind the picker rather than an empty shell, so
+    // dismissing it or picking the default costs no extra load.
+    currentCity = cityIndex.default;
+  }
+  return loadData(false);
+})();
 
 // Pick up whatever the background --serve auto-check produces, without needing
 // a manual click or page reload. Checking once a minute is what keeps the delay
@@ -2079,7 +2299,8 @@ async function pollForChanges(){
   // should pick that up without anyone reloading.
   if (dataSource === 'static') {
     try {
-      const res = await fetch(STATIC_DATA_URL, { cache: 'no-store' });
+      const res = await fetch(staticDataUrl(currentCity || cityIndex.default),
+                              { cache: 'no-store' });
       if (!res.ok) return;
       const data = await res.json();
       if (data.generated_at && data.generated_at !== lastGeneratedAt) {
@@ -2092,7 +2313,8 @@ async function pollForChanges(){
     return;
   }
   try {
-    const res = await fetch('/api/status');
+    const res = await fetch(
+      `/api/status?city=${encodeURIComponent(currentCity || cityIndex.default)}`);
     if (!res.ok) return;
     const { generated_at, scraping } = await res.json();
     serverScraping = !!scraping;
