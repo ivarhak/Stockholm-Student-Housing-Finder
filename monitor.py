@@ -561,6 +561,10 @@ CITIES = {
         "coverage_note": "Covers SSSB and Bostadsförmedlingen (which is also where "
                          "Svenska Bostäder's student flats are advertised). Other "
                          "Stockholm landlords aren't included.",
+        # Links rendered alongside the note. Kept as structured data rather than
+        # HTML in the string, so nothing from a data file is ever injected as
+        # markup — the dashboard builds real anchor elements from these.
+        "coverage_links": [],
         "grocery_bbox": GROCERY_BBOX,
         # What the dashboard's max-commute slider opens at.
         "max_commute_default": 45,
@@ -2195,6 +2199,7 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         "city_name": conf["name"],
         "max_commute_default": conf.get("max_commute_default", 45),
         "coverage_note": conf.get("coverage_note"),
+        "coverage_links": conf.get("coverage_links") or [],
         # So the badge's tooltip can say what NEW actually means rather than the
         # number living in two places.
         "new_window_hours": NEW_WINDOW_HOURS,

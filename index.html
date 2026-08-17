@@ -672,6 +672,7 @@
     color:var(--dim);
   }
   #coverageNote[hidden]{display:none;}
+  #coverageNote a{color:var(--teal);}
 
   /* ── City picker ─────────────────────────────────────────
      Both of these are hidden while only one city exists, so nothing here
@@ -1396,10 +1397,25 @@ function applyCityChrome(){
     || (cityIndex.cities[currentCity] || {}).name || '';
   if (many && name) document.getElementById('cityBtnLabel').textContent = name;
 
+  // What this city's data covers, and what it doesn't — plus links to whatever
+  // it can't reach, so "we don't have this" comes with somewhere to go. Built as
+  // DOM nodes rather than innerHTML: the text comes from a data file, and a data
+  // file should never be able to inject markup.
   const cov = document.getElementById('coverageNote');
   const note = currentData && currentData.coverage_note;
-  cov.hidden = !note;
-  if (note) cov.textContent = note;
+  const links = (currentData && currentData.coverage_links) || [];
+  cov.hidden = !note && !links.length;
+  cov.textContent = note || '';
+  links.forEach((lk, i) => {
+    if (!lk || !lk.url) return;
+    cov.appendChild(document.createTextNode(i === 0 ? ' ' : ' · '));
+    const a = document.createElement('a');
+    a.href = lk.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = lk.label || lk.url;
+    cov.appendChild(a);
+  });
 
   const preferred = currentData && currentData.max_commute_default;
   if (preferred && !commuteTouched) {
