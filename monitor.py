@@ -583,6 +583,14 @@ CITIES = {
         # tunnelbana line, so the dashboard says "SSSB lines" and "North line";
         # a city without a metro would say "areas" and read just as naturally.
         "area_group_noun": "line",
+        # Draw the tunnelbana under the roundels. Only Stockholm has one, and
+        # the dashboard's METRO_LINES are its real station coordinates — drawn
+        # over another city they are simply wrong, so this is opt-in per city.
+        "transit_overlay": "stockholm-metro",
+        # Where a visitor should actually apply. Per city, because a Lund
+        # listing pointing at sssb.se would be worse than pointing nowhere.
+        "sources": [{"label": "sssb.se", "url": "https://sssb.se"},
+                    {"label": "bostad.stockholm.se", "url": "https://bostad.stockholm.se"}],
         "grocery_bbox": GROCERY_BBOX,
         # What the dashboard's max-commute slider opens at.
         "max_commute_default": 45,
@@ -638,6 +646,7 @@ CITIES = {
              "url": "https://boplats.se/sok?types=1hand&objecttype=student"},
         ],
         "area_group_noun": "area",
+        "sources": [{"label": "sgs.se", "url": "https://sgs.se"}],
         "grocery_bbox": (57.60, 11.75, 57.80, 12.15),
         "max_commute_default": 30,
     },
@@ -675,6 +684,7 @@ CITIES = {
             {"label": "Boplats Syd", "url": "https://www.boplatssyd.se/"},
         ],
         "area_group_noun": "area",
+        "sources": [{"label": "afbostader.se", "url": "https://www.afbostader.se/lediga-bostader/"}],
         "grocery_bbox": (55.63, 13.05, 55.78, 13.30),
         # Lund is small enough that essentially everything is a short bike ride,
         # so a 45-minute cap would filter nothing at all.
@@ -2636,6 +2646,8 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         "coverage_links": conf.get("coverage_links") or [],
         "providers": conf["providers"],
         "area_group_noun": conf.get("area_group_noun", "area"),
+        "transit_overlay": conf.get("transit_overlay"),
+        "sources": conf.get("sources") or [],
         # So the badge's tooltip can say what NEW actually means rather than the
         # number living in two places.
         "new_window_hours": NEW_WINDOW_HOURS,

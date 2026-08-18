@@ -1519,6 +1519,32 @@ function sortNote(){
   return parts.join(', ');
 }
 
+// A payload written before these fields existed is Stockholm's by definition —
+// it predates there being any other city — so it keeps the tunnelbana and the
+// SSSB/BF source links rather than losing them. Without this the map would drop
+// its metro lines between deploying this page and the next scrape rewriting the
+// data, which is a regression a visitor would see and we wouldn't.
+const overlayFor = d => d.transit_overlay
+  ?? ((d.city || 'stockholm') === 'stockholm' ? 'stockholm-metro' : null);
+const LEGACY_SOURCES = [{ label: 'sssb.se', url: 'https://sssb.se' },
+                        { label: 'bostad.stockholm.se', url: 'https://bostad.stockholm.se' }];
+const sourcesFor = d => d.sources
+  ?? ((d.city || 'stockholm') === 'stockholm' ? LEGACY_SOURCES : []);
+
+let transitLayer = null;
+// Only for a city that declares one. METRO_LINES holds Stockholm's real station
+// coordinates in official SL colours; drawing them over Göteborg or Lund would
+// put a tunnelbana through a city that hasn't got one.
+function drawTransitOverlay(){
+  if (transitLayer) { leafletMap.removeLayer(transitLayer); transitLayer = null; }
+  if (!currentData || overlayFor(currentData) !== 'stockholm-metro') return;
+  transitLayer = L.layerGroup(METRO_LINES.flatMap(line =>
+    line.segments.map(seg => L.polyline(seg, {
+      color: line.color, weight: 3, opacity: 0.55, interactive: false,
+      lineJoin: 'round', lineCap: 'round',
+    })))).addTo(leafletMap);
+}
+
 function applyProviderChrome(){
   computeProviderInfo();
 
@@ -1570,7 +1596,10 @@ function applyProviderChrome(){
   // the filter strip onto another row the map keeps the height it measured
   // before they existed — leaving it drawn short by exactly one row. Same
   // reason the cog calls this when it opens the advanced panel.
-  if (leafletMap) leafletMap.invalidateSize();
+  if (leafletMap) {
+    drawTransitOverlay();
+    leafletMap.invalidateSize();
+  }
 }
 
 function openCityPicker(){
@@ -1621,8 +1650,10 @@ function applyDataSourceChrome(){
     src.innerHTML =
       'Updates'
       + (every ? ` every ${every} ${every === 1 ? 'hour' : 'hours'}` : ' a few times a day')
-      + ' · unofficial view of <a href="https://sssb.se" target="_blank" rel="noopener noreferrer">sssb.se</a>'
-      + ' + <a href="https://bostad.stockholm.se" target="_blank" rel="noopener noreferrer">bostad.stockholm.se</a>'
+      + ' · unofficial view of '
+      + ((currentData ? sourcesFor(currentData) : []).map(src =>
+           `<a href="${src.url}" target="_blank" rel="noopener noreferrer">${src.label}</a>`
+         ).join(' + ') || 'the listed providers')
       + ' — apply there.'
       // A route for the other side. If a landlord would rather their listings
       // weren't shown here, they should be able to say so without having to
@@ -1697,8 +1728,26 @@ function render(){
   }
   renderSchoolPicker();
   renderMeta();
+  recentreForCity();
   renderMap();
   renderSidebar();
+}
+
+// initMap() sets the view before any data exists, so it uses the fallback
+// centre — which happens to be Stockholm's. That was invisible while Stockholm
+// was the only city and quietly wrong the moment it wasn't: Göteborg drew all
+// its roundels correctly and left the viewport 400 km away, looking like an
+// empty map rather than a misplaced one.
+//
+// Once per city, not on every render: re-centring on a background refresh would
+// yank the view out from under someone who had panned somewhere.
+let renderedCity = null;
+function recentreForCity(){
+  if (!leafletMap || !currentData) return;
+  const city = currentData.city || 'stockholm';
+  if (city === renderedCity) return;
+  renderedCity = city;
+  leafletMap.setView(centre(), leafletMap.getZoom());
 }
 
 function renderSchoolPicker(){
@@ -1729,9 +1778,12 @@ function renderSchoolPicker(){
     : 'Centre the map and measure commutes from here';
   // The name stays put and the selected campus lives in the subtitle — the
   // campus is what changes, so it shouldn't be spliced into the project's name.
+  const providers = Object.keys(providerInfo);
+  const cityName = (currentData && currentData.city_name) || 'Stockholm';
   document.getElementById('brandSub').textContent =
-    `SSSB + Bostadsförmedlingen · commutes to ${selectedSchool}`;
-  document.title = `Stockholm Student Housing Finder — ${selectedSchool}`;
+    `${providers.join(' + ') || cityName} · commutes to ${selectedSchool}`;
+  document.getElementById('brandTitle').textContent = `${cityName} Student Housing Finder`;
+  document.title = `${cityName} Student Housing Finder — ${selectedSchool}`;
 }
 
 function setSchool(id){
@@ -1810,14 +1862,7 @@ function initMap(){
                  '&copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
   }).addTo(leafletMap);
 
-  METRO_LINES.forEach(line => {
-    line.segments.forEach(seg => {
-      L.polyline(seg, {
-        color: line.color, weight: 3, opacity: 0.55, interactive: false,
-        lineJoin: 'round', lineCap: 'round',
-      }).addTo(leafletMap);
-    });
-  });
+  drawTransitOverlay();
 
   buildGroceryLayer();
 
