@@ -297,11 +297,9 @@
      clickable against data with no grocery list (an older saved file, or a failed
      lookup) and toggles a layer that isn't there. */
   .legend button[hidden]{display:none;}
-  .legend button[data-g="North"] .sw{background:var(--slate);}
-  .legend button[data-g="South"] .sw{background:var(--clay);}
-  .legend button[data-g="City"] .sw{background:var(--leaf);}
-  .legend button[data-p="SSSB"] .sw{background:var(--teal);}
-  .legend button[data-p="Bostadsförmedlingen"] .sw{background:var(--plum);}
+  /* Chip swatch colours are set inline from the payload — which provider or
+     group gets which colour is decided per city now, not written down per name.
+     Slots 0 and 1 still resolve to the original teal and plum. */
   #groceryChip .sw{background:var(--ochre);border-radius:50%;}
   /* Toggle is on but the map is zoomed out past the threshold: dimmed like an
      off chip, but dashed, so "on and waiting" reads differently from "off". */
@@ -548,6 +546,10 @@
   }
   .provider-tag.sssb{background:var(--teal-soft);color:var(--teal);border:1px solid var(--teal-line);}
   .provider-tag.bf{background:var(--plum-soft);color:var(--plum);border:1px solid var(--plum-line);}
+  .provider-tag.slot-0{background:var(--teal-soft);color:var(--teal);border:1px solid var(--teal-line);}
+  .provider-tag.slot-1{background:var(--plum-soft);color:var(--plum);border:1px solid var(--plum-line);}
+  .provider-tag.slot-2{background:color-mix(in srgb, var(--slate) 16%, transparent);color:var(--slate);border:1px solid color-mix(in srgb, var(--slate) 45%, transparent);}
+  .provider-tag.slot-3{background:color-mix(in srgb, var(--clay) 16%, transparent);color:var(--clay);border:1px solid color-mix(in srgb, var(--clay) 45%, transparent);}
   .new-tag{
     position:absolute;top:-7px;right:10px;
     font-family:var(--mono);font-size:9px;font-weight:600;
@@ -990,20 +992,17 @@
     <div class="control control-wide">
       <label>Provider</label>
       <div class="legend" id="providerChips">
-        <button data-p="SSSB"><span class="sw"></span>SSSB</button>
-        <button data-p="Bostadsförmedlingen"><span class="sw"></span>Bostadsförm.</button>
+        <!-- Provider chips are built from the payload by applyProviderChrome();
+             the Shops chip is markup because it toggles a map layer, not a
+             provider, and belongs to the page rather than to any city. -->
         <button id="groceryChip" hidden
                 title="Hide chain supermarkets"><span class="sw"></span>Shops</button>
       </div>
     </div>
 
     <div class="control control-wide">
-      <label>SSSB lines</label>
-      <div class="legend" id="legend">
-        <button data-g="North"><span class="sw"></span>North</button>
-        <button data-g="South"><span class="sw"></span>South</button>
-        <button data-g="City"><span class="sw"></span>City</button>
-      </div>
+      <label id="groupsLabel">Areas</label>
+      <div class="legend" id="legend"></div>
     </div>
     </div>
 
@@ -1184,8 +1183,81 @@ const METRO_LINES = [
     ],
   ]},
 ];
-const activeGroups = new Set(['North','South','City']);
-const activeProviders = new Set(['SSSB','Bostadsförmedlingen']);
+// ── Providers, derived rather than named ────────────────────────────────
+//
+// This used to branch on `provider === 'SSSB'` in a dozen places, which meant a
+// city with any other provider rendered zero listings. The distinction the code
+// actually wants isn't the name, it's the shape of the data:
+//
+//   area-based — the listing names an `area` that exists in payload.areas, so it
+//                belongs to a cluster we have coordinates and commute times for.
+//                Drawn as one roundel per area. (SSSB, and SGS in Göteborg.)
+//   pin-based  — the listing carries its own `coords`. Drawn as its own pin.
+//                (Bostadsförmedlingen, whose ads each have a location.)
+//
+// Bostadsförmedlingen ads *do* have an `area` string, but those are city
+// districts rather than keys of payload.areas — which is exactly why testing for
+// membership works where testing the name did not.
+//
+// Whether a provider states queue days is decided the same way: by looking at
+// whether any of its listings actually carry one. That is what lets an SSSB row
+// say "412 days" while an SGS row, from a landlord that publishes no queue
+// figure at all, says "open now" instead of a misleading "— days".
+const PROVIDER_LABELS = {
+  'Bostadsförmedlingen': { chip: 'Bostadsförm.', abbr: 'BF' },
+};
+// Slot 0 and 1 reproduce the original SSSB teal and BF plum exactly; the rest
+// exist so a third or fourth provider gets a distinct colour rather than none.
+const SLOT_COLORS = ['var(--teal)', 'var(--plum)', 'var(--slate)', 'var(--clay)'];
+const GROUP_COLORS = ['var(--slate)', 'var(--clay)', 'var(--leaf)', 'var(--teal)', 'var(--plum)'];
+
+let providerInfo = {};   // name -> { slot, kind, statesQueue, statesDeadline, chip, abbr }
+let areaGroups = [];     // distinct area groups, in payload order
+
+function computeProviderInfo(){
+  const listings = (currentData && currentData.listings) || [];
+  const areas = (currentData && currentData.areas) || {};
+  // Registry order first, so a provider's colour doesn't move when it happens to
+  // have nothing available; anything unexpected in the data is appended.
+  const names = [];
+  ((currentData && currentData.providers) || []).forEach(p => { if (!names.includes(p)) names.push(p); });
+  listings.forEach(l => { if (l.provider && !names.includes(l.provider)) names.push(l.provider); });
+
+  providerInfo = {};
+  names.forEach((name, i) => {
+    const rows = listings.filter(l => l.provider === name);
+    const areaBacked = rows.filter(l => l.area && areas[l.area]).length;
+    const lbl = PROVIDER_LABELS[name] || {};
+    providerInfo[name] = {
+      slot: i % SLOT_COLORS.length,
+      // Majority rather than "any": one listing with a stray area name shouldn't
+      // decide how a whole provider is drawn.
+      kind: rows.length && areaBacked > rows.length / 2 ? 'area' : 'pin',
+      statesQueue: rows.some(l => l.queue_days != null),
+      statesDeadline: rows.some(l => l.deadline),
+      chip: lbl.chip || name,
+      abbr: lbl.abbr || name,
+    };
+  });
+
+  areaGroups = [];
+  Object.values(areas).forEach(a => {
+    if (a.group && !areaGroups.includes(a.group)) areaGroups.push(a.group);
+  });
+}
+
+const kindOf = name => (providerInfo[name] || {}).kind || 'pin';
+const isAreaProvider = name => kindOf(name) === 'area';
+const activeAreaProviders = () => [...activeProviders].filter(isAreaProvider);
+const providerColor = name => SLOT_COLORS[(providerInfo[name] || {}).slot || 0];
+const groupColor = g => LINE_COLORS[g] || GROUP_COLORS[Math.max(0, areaGroups.indexOf(g)) % GROUP_COLORS.length];
+// The one area-based provider whose name labels the group chips; with more than
+// one there's no single right answer, so the strip just says "Areas".
+const areaProviderName = () => Object.keys(providerInfo).filter(isAreaProvider)[0] || null;
+
+// Seeded empty and filled from the payload on first render — see applyProviderChrome().
+const activeGroups = new Set();
+const activeProviders = new Set();
 let maxCommuteMin = 45;
 // Set once the *user* moves the commute slider, so switching city stops
 // overwriting a limit they chose. A city's default only applies while it is
@@ -1376,6 +1448,7 @@ async function loadData(triggerRefresh){
     }
   }
   lastGeneratedAt = currentData.generated_at;
+  applyProviderChrome();
   applyCityChrome();
   if (triggerRefresh) {
     myRefreshInFlight = false;
@@ -1425,6 +1498,77 @@ function applyCityChrome(){
       slider.dispatchEvent(new Event('input'));
     }
   }
+}
+
+// Builds both chip rows from the payload and seeds the filters to "everything
+// on". Runs on every data load, so switching city swaps the providers and the
+// area groups rather than carrying Stockholm's over.
+const groupNoun = () => (currentData && currentData.area_group_noun) || 'area';
+
+// Describes the sort in the same terms the badges use, so the footer can't claim
+// an ordering the data doesn't support.
+function sortNote(){
+  const parts = Object.entries(providerInfo).map(([name, info]) => {
+    const abbr = info.abbr || name;
+    if (info.statesQueue) return `${abbr} sorted by queue days`;
+    if (info.statesDeadline) return `${abbr} by deadline`;
+    return `${abbr} by rent`;
+  });
+  return parts.join(', ');
+}
+
+function applyProviderChrome(){
+  computeProviderInfo();
+
+  const chips = document.getElementById('providerChips');
+  const grocery = document.getElementById('groceryChip');
+  // Rebuild in place, keeping the Shops chip — it lives in this row but isn't a
+  // provider, and it owns state (on/off, zoomed-out) that a rebuild would lose.
+  [...chips.querySelectorAll('button[data-p]')].forEach(b => b.remove());
+  Object.keys(providerInfo).forEach(name => {
+    const b = document.createElement('button');
+    b.dataset.p = name;
+    const sw = document.createElement('span');
+    sw.className = 'sw';
+    sw.style.background = providerColor(name);
+    b.appendChild(sw);
+    b.appendChild(document.createTextNode(providerInfo[name].chip));
+    chips.insertBefore(b, grocery);
+  });
+
+  const legend = document.getElementById('legend');
+  legend.innerHTML = '';
+  areaGroups.forEach(g => {
+    const b = document.createElement('button');
+    b.dataset.g = g;
+    const sw = document.createElement('span');
+    sw.className = 'sw';
+    sw.style.background = groupColor(g);
+    b.appendChild(sw);
+    b.appendChild(document.createTextNode(g));
+    legend.appendChild(b);
+  });
+  // One group is not a filter — the same reasoning that hides the Shops chip
+  // when there are no shops, and the city button when there's one city.
+  const groupsControl = legend.closest('.control');
+  if (groupsControl) groupsControl.hidden = areaGroups.length < 2;
+  const noun = (currentData && currentData.area_group_noun) || 'area';
+  const owner = areaProviderName();
+  document.getElementById('groupsLabel').textContent =
+    owner ? `${owner} ${noun}s` : 'Areas';
+
+  // Everything starts on. Rebuilt per city rather than persisted, since a
+  // provider filter from another city would mean nothing here.
+  activeProviders.clear();
+  Object.keys(providerInfo).forEach(n => activeProviders.add(n));
+  activeGroups.clear();
+  areaGroups.forEach(g => activeGroups.add(g));
+
+  // The chips are built after initMap(), so at widths where adding them wraps
+  // the filter strip onto another row the map keeps the height it measured
+  // before they existed — leaving it drawn short by exactly one row. Same
+  // reason the cog calls this when it opens the advanced panel.
+  if (leafletMap) leafletMap.invalidateSize();
 }
 
 function openCityPicker(){
@@ -1501,8 +1645,10 @@ function bikeLabel(m){
 }
 
 function listingCommute(l){
-  if (l.provider === 'SSSB') return commuteMinutes(currentData.areas[l.area]);
-  return commuteMinutes(l);
+  // No provider test needed: either the listing belongs to an area we have
+  // metrics for, or it carries its own coordinates.
+  const a = currentData.areas[l.area];
+  return a ? commuteMinutes(a) : commuteMinutes(l);
 }
 
 // Per-listing queue-days / rent filters, applied to the map roundel counts,
@@ -1613,31 +1759,34 @@ function renderMeta(){
   const bySrc = {};
   d.listings.forEach(l => bySrc[l.provider] = (bySrc[l.provider]||0)+1);
   document.getElementById('listingCount').textContent =
-    Object.entries(bySrc).map(([p,n]) => `${n} ${p === 'Bostadsförmedlingen' ? 'BF' : p}`).join(' · ') || '0 listings';
+    Object.entries(bySrc).map(([p,n]) => `${n} ${(providerInfo[p] || {}).abbr || p}`).join(' · ') || '0 listings';
   document.getElementById('autoStatus').textContent = d.demo
     ? ''
     : (d.poll_interval_min ? `● auto-checking every ${d.poll_interval_min}min` : '');
 }
 
-function visibleSssbAreaNames(){
-  if (!activeProviders.has('SSSB')) return [];
+function visibleAreaNames(){
+  // Roundels belong to the area-based providers, so with all of those switched
+  // off there are no areas to draw.
+  if (!activeAreaProviders().length) return [];
   return Object.entries(currentData.areas)
     .filter(([name, a]) => activeGroups.has(a.group) && commuteMinutes(a) <= maxCommuteMin)
     .map(([name]) => name);
 }
 
-function visibleBfListings(){
-  if (!activeProviders.has('Bostadsförmedlingen')) return [];
+function visiblePinListings(){
   return currentData.listings.filter(l =>
-    l.provider === 'Bostadsförmedlingen' && listingCommute(l) <= maxCommuteMin && passesFilters(l));
+    kindOf(l.provider) === 'pin' && activeProviders.has(l.provider)
+    && listingCommute(l) <= maxCommuteMin && passesFilters(l));
 }
 
 // SSSB listings in one area that survive the queue-days / rent sliders —
 // this is what the area's roundel counts, so dragging a slider visibly
 // empties areas out on the map.
-function sssbListingsInArea(name){
+function listingsInArea(name){
   return currentData.listings.filter(l =>
-    l.provider === 'SSSB' && l.area === name && passesFilters(l));
+    isAreaProvider(l.provider) && activeProviders.has(l.provider)
+    && l.area === name && passesFilters(l));
 }
 
 let leafletMap;
@@ -1826,12 +1975,12 @@ function renderMap(){
   markers = [];
   renderSchools();
 
-  if (activeProviders.has('SSSB')) {
-    const visible = new Set(visibleSssbAreaNames());
+  if (activeAreaProviders().length) {
+    const visible = new Set(visibleAreaNames());
     Object.entries(currentData.areas).forEach(([name, area]) => {
       if (!area.coords) return;
       const isVisible = visible.has(name);
-      const inArea = sssbListingsInArea(name);
+      const inArea = listingsInArea(name);
       const count = inArea.length;
       const isEmpty = count === 0;
 
@@ -1840,7 +1989,7 @@ function renderMap(){
       // as identical dots at identical pixels, which looks like one listing.
       // Same count-in-a-circle idiom as the area roundel, one level down.
       if (isVisible && count > 0 && areaSplits(name)) {
-        const colour = LINE_COLORS[area.group] || 'var(--dim)';
+        const colour = groupColor(area.group);
         const buildings = new Map();
         inArea.forEach(l => {
           // A listing whose address wouldn't geocode sits at the area centre
@@ -1873,7 +2022,7 @@ function renderMap(){
         });
         return;
       }
-      const color = isEmpty ? 'var(--empty)' : (LINE_COLORS[area.group] || 'var(--dim)');
+      const color = isEmpty ? 'var(--empty)' : groupColor(area.group);
       const size = isEmpty ? 16 : 14 + Math.min(count, 6) * 3;
 
       const icon = L.divIcon({
@@ -1893,12 +2042,12 @@ function renderMap(){
     });
   }
 
-  // Bostadsförmedlingen: precise per-listing pins (each ad has its own coords).
-  visibleBfListings().forEach(l => {
+  // Pin-based providers: one marker per listing, each at its own coordinates.
+  visiblePinListings().forEach(l => {
     if (!l.coords) return;
     const icon = L.divIcon({ className:'', html:'<div class="bf-pin"></div>', iconSize:[13,13] });
     const marker = L.marker(l.coords, { icon }).addTo(leafletMap);
-    marker.bindTooltip(`${l.address || l.area} · ${l.rent_sek ? l.rent_sek + ' kr' : ''} (${l.landlord || 'BF'})`, { direction:'top' });
+    marker.bindTooltip(`${l.address || l.area} · ${l.rent_sek ? l.rent_sek + ' kr' : ''} (${l.landlord || (providerInfo[l.provider] || {}).abbr || l.provider})`, { direction:'top' });
     if (l.url) marker.on('click', () => window.open(l.url, '_blank'));
     markers.push(marker);
   });
@@ -1920,7 +2069,7 @@ function selectArea(name){
     // When the area dissolves, frame its actual buildings rather than dropping
     // to a fixed zoom: at 13 a kilometre-wide area packs two dozen overlapping
     // dots into ~150px, which defeats the point of splitting it up.
-    const spots = sssbListingsInArea(name).map(l => l.coords).filter(Boolean);
+    const spots = listingsInArea(name).map(l => l.coords).filter(Boolean);
     if (areaSplits(name) && spots.length > 1) {
       leafletMap.flyToBounds(spots, { padding: [70, 70], maxZoom: 16, duration: 0.6 });
     } else {
@@ -1967,25 +2116,46 @@ function fmtCommute(obj){
 }
 
 function providerTag(l){
-  if (l.provider === 'SSSB') return '<span class="provider-tag sssb">SSSB</span>';
-  const lbl = l.landlord && l.landlord !== 'Bostadsförmedlingen'
-    ? 'BF · ' + l.landlord.toUpperCase() : 'BOSTADSFÖRMEDLINGEN';
-  return `<span class="provider-tag bf">${lbl}</span>`;
+  const info = providerInfo[l.provider] || {};
+  const cls = `provider-tag slot-${info.slot || 0}`;
+  // A landlord worth naming is one that isn't just the provider again — that's
+  // how Bostadsförmedlingen's external queues show whose flat it actually is.
+  // "SGS" + "SGS Studentbostäder" is the same name twice, so either being a
+  // prefix of the other counts as redundant, not just exact equality.
+  const land = String(l.landlord || ''), prov = String(l.provider || '');
+  const echoes = !land || land.toLowerCase().startsWith(prov.toLowerCase())
+                       || prov.toLowerCase().startsWith(land.toLowerCase());
+  const lbl = echoes ? prov.toUpperCase()
+                     : `${info.abbr || prov} · ${land.toUpperCase()}`;
+  return `<span class="${cls}">${lbl}</span>`;
 }
 
+// What the badge on the right of a row says, decided by what the provider
+// actually publishes rather than by its name. A landlord that states no queue
+// figure gets "open now" instead of a confident, meaningless "— days".
 function badgeFor(l){
-  if (l.provider === 'SSSB') {
+  const info = providerInfo[l.provider] || {};
+  if (info.statesQueue) {
     return l.queue_days != null ? l.queue_days.toLocaleString() + ' days' : '— days';
   }
-  return l.deadline ? 'apply by ' + String(l.deadline).slice(0,10) : 'open now';
+  if (info.statesDeadline) {
+    return l.deadline ? 'apply by ' + String(l.deadline).slice(0,10) : 'open now';
+  }
+  return 'open now';
 }
 
+// Providers keep their registry order, and within a provider the sort key is
+// whichever figure that provider actually publishes: queue days if it states
+// them, else the application deadline, else rent — which every listing has.
 function sortListings(rows){
+  const slot = l => (providerInfo[l.provider] || {}).slot ?? 99;
   return rows.slice().sort((a,b) => {
-    // SSSB first by ascending queue days, then BF by soonest deadline
-    if (a.provider !== b.provider) return a.provider === 'SSSB' ? -1 : 1;
-    if (a.provider === 'SSSB') return (a.queue_days ?? 1e9) - (b.queue_days ?? 1e9);
-    return String(a.deadline || '9999').localeCompare(String(b.deadline || '9999'));
+    if (a.provider !== b.provider) return slot(a) - slot(b);
+    const info = providerInfo[a.provider] || {};
+    if (info.statesQueue) return (a.queue_days ?? 1e9) - (b.queue_days ?? 1e9);
+    if (info.statesDeadline)
+      return String(a.deadline || '9999').localeCompare(String(b.deadline || '9999'));
+    return (Number(a.rent_sek) || 1e9) - (Number(b.rent_sek) || 1e9);
   });
 }
 
@@ -2002,15 +2172,16 @@ function newTagTitle(l){
 }
 
 function rowHtml(l, newIds){
-  const commuteRef = l.provider === 'SSSB' ? (currentData.areas[l.area] || {}) : l;
+  const commuteRef = currentData.areas[l.area] || l;
   const cm = schoolMetrics(commuteRef);
   const commute = !cm ? ''
     : (typeof cm.transit_min === 'number' ? cm.transit_min + ' min transit' : bikeLabel(cm));
-  const title = l.provider === 'SSSB' ? l.area : (l.address || l.area);
+  const areaRow = isAreaProvider(l.provider);
+  const title = areaRow ? l.area : (l.address || l.area);
   // BF ads lead with their area (their title is the street address); SSSB rows
   // lead with the area as the title, so they don't repeat it. Both then show the
   // apartment type where the source states one.
-  const sub = [l.provider === 'SSSB' ? null : l.area, l.type]
+  const sub = [areaRow ? null : l.area, l.type]
     .filter(Boolean).map(v => v + ' · ').join('');
   // Only what the listing actually states — a silent card shows neither.
   const extras = [];
@@ -2024,7 +2195,7 @@ function rowHtml(l, newIds){
   if (l.max_years != null) extras.push('max ' + l.max_years + ' år');
   // Area-level, so it only applies to SSSB rows; BF ads carry their own coords
   // and aren't grouped into an area with a precomputed figure.
-  const near = l.provider === 'SSSB' && !selectedArea && commuteRef && commuteRef.nearest_grocery;
+  const near = areaRow && !selectedArea && commuteRef && commuteRef.nearest_grocery;
   if (near) extras.push(`${near.chain} ${near.distance_m >= 1000
     ? (near.distance_m / 1000).toFixed(1) + ' km' : near.distance_m + ' m'} away`);
   return `
@@ -2122,16 +2293,17 @@ function renderSidebar(){
     const area = currentData.areas[selectedArea];
     header.innerHTML = `
       <button class="back" onclick="clearSelection()">← All listings</button>
-      <h2 id="panelTitle">${selectedArea} <span style="color:var(--dim);font-weight:400;font-size:12px;">· ${area.group} line · SSSB</span></h2>
+      <h2 id="panelTitle">${selectedArea} <span style="color:var(--dim);font-weight:400;font-size:12px;">· ${area.group} ${groupNoun()} · ${areaProviderName() || ''}</span></h2>
       <div class="stats-row">${fmtCommute(area)}</div>
     `;
-    rows = sssbListingsInArea(selectedArea);
+    rows = listingsInArea(selectedArea);
   } else {
-    const visibleAreas = new Set(visibleSssbAreaNames());
-    const bfVisible = new Set(visibleBfListings().map(l => l.id));
+    const visibleAreas = new Set(visibleAreaNames());
+    const pinVisible = new Set(visiblePinListings().map(l => l.id));
     rows = currentData.listings.filter(l =>
-      (l.provider === 'SSSB' && activeProviders.has('SSSB') && visibleAreas.has(l.area) && passesFilters(l)) ||
-      (l.provider === 'Bostadsförmedlingen' && bfVisible.has(l.id))
+      (isAreaProvider(l.provider) && activeProviders.has(l.provider)
+        && visibleAreas.has(l.area) && passesFilters(l))
+      || pinVisible.has(l.id)
     );
     const bits = [`within ${maxCommuteMin} min of ${selectedSchool}`];
     if (maxQueueDays !== null) bits.push(`≤${maxQueueDays.toLocaleString()} queue days`);
@@ -2141,7 +2313,7 @@ function renderSidebar(){
     else if (minFloor !== null) bits.push(`floor ${floorLabel(minFloor)}+`);
     else if (maxFloor !== null) bits.push(`floor ≤${floorLabel(maxFloor)}`);
     if (minYears !== null) bits.push(`${minYears}+ år contract`);
-    bits.push('SSSB sorted by queue days, BF by deadline');
+    bits.push(sortNote());
     header.innerHTML = `<h2 id="panelTitle">All available listings</h2><div style="font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:4px;">${bits.join(' · ')}</div>`;
   }
 
@@ -2259,7 +2431,9 @@ document.getElementById('providerChips').addEventListener('click', (e) => {
   const p = btn.dataset.p;
   if (activeProviders.has(p)) { activeProviders.delete(p); btn.classList.add('off'); }
   else { activeProviders.add(p); btn.classList.remove('off'); }
-  if (p === 'SSSB' && !activeProviders.has('SSSB')) clearSelection();
+  // Turning off the provider whose areas are selected leaves a selection
+  // pointing at nothing, so drop it.
+  if (selectedArea && !activeAreaProviders().length) clearSelection();
   render();
 });
 
@@ -2363,6 +2537,9 @@ async function pollForChanges(){
       if (data.generated_at && data.generated_at !== lastGeneratedAt) {
         currentData = data;
         lastGeneratedAt = data.generated_at;
+        // A scheduled scrape can change which providers have listings, so the
+        // chips have to be rebuilt here too — not only on first load.
+        applyProviderChrome();
         applyDataSourceChrome();
         render();
       }

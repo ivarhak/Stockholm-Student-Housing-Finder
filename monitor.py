@@ -565,6 +565,10 @@ CITIES = {
         # HTML in the string, so nothing from a data file is ever injected as
         # markup — the dashboard builds real anchor elements from these.
         "coverage_links": [],
+        # What a group of areas is called here. Stockholm's areas are grouped by
+        # tunnelbana line, so the dashboard says "SSSB lines" and "North line";
+        # a city without a metro would say "areas" and read just as naturally.
+        "area_group_noun": "line",
         "grocery_bbox": GROCERY_BBOX,
         # What the dashboard's max-commute slider opens at.
         "max_commute_default": 45,
@@ -2200,6 +2204,8 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         "max_commute_default": conf.get("max_commute_default", 45),
         "coverage_note": conf.get("coverage_note"),
         "coverage_links": conf.get("coverage_links") or [],
+        "providers": conf["providers"],
+        "area_group_noun": conf.get("area_group_noun", "area"),
         # So the badge's tooltip can say what NEW actually means rather than the
         # number living in two places.
         "new_window_hours": NEW_WINDOW_HOURS,
