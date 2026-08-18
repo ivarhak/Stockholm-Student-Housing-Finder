@@ -12,3 +12,11 @@ webdriver-manager>=4.0
 # --with-login fallback. Both imported lazily, so neither is load-bearing.
 plyer>=2.1
 keyring>=24.0
+
+# Reading a certificate's Authority Information Access extension, so a server
+# that omits its intermediate certificate can still be reached — afbostader.se
+# does exactly that, which is why Lund published nothing. Listed explicitly
+# rather than leant on as a transitive dependency: on Linux it arrives via
+# keyring -> SecretStorage, but macOS keyring uses the Keychain backend and
+# pulls in no crypto at all, so on Ivar's Mac it would simply have been absent.
+cryptography>=42.0

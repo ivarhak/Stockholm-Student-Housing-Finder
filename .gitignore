@@ -17,6 +17,11 @@ data/cities.json
 data/bike_route_cache.json
 data/address_cache.json
 
+# certifi's roots plus the intermediate certificate some server forgot to send,
+# rebuilt on demand from the CA the certificate itself points at. Machine-local
+# and reproducible — never commit a CA bundle.
+data/ca-bundle-*.pem
+
 # Scrape diagnostics, written by --debug
 debug_page.html
 

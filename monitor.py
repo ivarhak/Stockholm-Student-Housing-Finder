@@ -1482,6 +1482,108 @@ def _parse_card_fields(card_text: str):
 
 
 
+# ── Servers that forget to send their intermediate certificate ───────────
+#
+# afbostader.se does exactly that, on both the apex and www. The live run said
+# so precisely once _why() started printing the message instead of the word
+# "SSLError":
+#
+#     [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+#     unable to get local issuer certificate
+#
+# That phrase means the chain they sent can't be joined to any trusted root —
+# the leaf is signed by an intermediate the server never handed over. Browsers
+# hide this: every certificate carries an "Authority Information Access"
+# extension naming a URL to fetch the issuer from, and browsers quietly follow
+# it. OpenSSL does not, so requests fails where Chrome succeeds. It is their
+# misconfiguration, but it's ours to work around.
+#
+# So we do what the browser does. Note what this deliberately is NOT:
+# verify=False. Verification stays fully on for the real request — we only
+# read the chain the server offered, fetch the issuer it pointed us at, and add
+# it to certifi's bundle. If the fetched intermediate doesn't chain to a
+# genuinely trusted root, the retry still fails, exactly as it should.
+_REPAIRED_BUNDLES: dict[tuple[str, int], str | None] = {}
+
+
+def _fetch_issuer_certs(host: str, port: int = 443, hops: int = 3) -> list[bytes]:
+    """The intermediates a server should have sent, fetched via each cert's AIA."""
+    import ssl
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.serialization import pkcs7
+
+    # Unverified purely to READ the certificate the server presents. Nothing is
+    # trusted on the strength of this connection; the verified retry is what
+    # decides whether the repair was legitimate.
+    leaf = ssl.get_server_certificate((host, port), timeout=15)
+    cert, out = x509.load_pem_x509_certificate(leaf.encode()), []
+
+    for _ in range(hops):
+        try:
+            aia = cert.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
+        except x509.ExtensionNotFound:
+            break
+        urls = [d.access_location.value for d in aia
+                if d.access_method == x509.oid.AuthorityInformationAccessOID.CA_ISSUERS]
+        if not urls:
+            break
+        blob = requests.get(urls[0], headers={"User-Agent": USER_AGENT}, timeout=15).content
+        # Issuers are published as bare DER most often, PEM sometimes, and
+        # PKCS#7 by a few CAs. Try all three rather than assume.
+        for load in (lambda b: [x509.load_der_x509_certificate(b)],
+                     lambda b: [x509.load_pem_x509_certificate(b)],
+                     lambda b: pkcs7.load_der_pkcs7_certificates(b)):
+            try:
+                certs = load(blob)
+                break
+            except Exception:
+                certs = None
+        if not certs:
+            break
+        cert = certs[0]
+        out += [c.public_bytes(serialization.Encoding.PEM) for c in certs]
+        if cert.issuer == cert.subject:      # reached a self-signed root
+            break
+    return out
+
+
+def _repaired_ca_bundle(host: str, port: int = 443) -> str | None:
+    """certifi's roots plus whatever intermediates `host` failed to send, or None."""
+    if (host, port) in _REPAIRED_BUNDLES:
+        return _REPAIRED_BUNDLES[(host, port)]
+    path = None
+    try:
+        import certifi
+        extra = _fetch_issuer_certs(host, port)
+        if extra:
+            path = str(DATA_DIR / f"ca-bundle-{re.sub(r'[^A-Za-z0-9.-]', '_', host)}.pem")
+            Path(path).write_bytes(Path(certifi.where()).read_bytes() + b"\n" + b"\n".join(extra))
+            print(f"  · {host} omitted {len(extra)} intermediate certificate(s); "
+                  f"fetched them from the CA and retrying with verification still on")
+    except Exception as e:
+        print(f"  · couldn't repair {host}'s certificate chain ({_why(e)[0]})")
+        path = None
+    _REPAIRED_BUNDLES[(host, port)] = path
+    return path
+
+
+def _get(url, **kwargs):
+    """requests.get, with one retry for a server that omitted its intermediate."""
+    try:
+        return requests.get(url, **kwargs)
+    except requests.exceptions.SSLError as e:
+        if "unable to get local issuer certificate" not in str(e):
+            raise
+        parts = urlsplit(url)
+        # Port matters: without it the probe would read the certificate of
+        # whatever answers on 443 instead of the host that actually failed.
+        bundle = _repaired_ca_bundle(parts.hostname or "", parts.port or 443)
+        if not bundle:
+            raise
+        return requests.get(url, **{**kwargs, "verify": bundle})
+
+
 def _why(e, resp=None) -> tuple[str, str]:
     """Why a request failed: (short, detailed). Short is fit for the dashboard,
     detailed for the terminal.
@@ -2327,11 +2429,13 @@ def fetch_afbostader() -> tuple[list[dict], list[str]]:
     payload, failures = None, []
     for base in AF_API_HOSTS:
         try:
-            resp = requests.get(base + AF_API_PATH, params={"lang": "sv_SE", "type": "1"},
-                                headers={"User-Agent": USER_AGENT,
-                                         "Accept": "application/json",
-                                         "Accept-Language": "sv-SE,sv;q=0.9"},
-                                timeout=30)
+            # _get, not requests.get: this host omits its intermediate
+            # certificate, which is the whole reason Lund published nothing.
+            resp = _get(base + AF_API_PATH, params={"lang": "sv_SE", "type": "1"},
+                        headers={"User-Agent": USER_AGENT,
+                                 "Accept": "application/json",
+                                 "Accept-Language": "sv-SE,sv;q=0.9"},
+                        timeout=30)
             resp.raise_for_status()
             payload = _decode_json(resp)
         except (requests.RequestException, ValueError) as e:
