@@ -124,7 +124,19 @@ Bostadsförmedlingen needs no selector fixing at all, since
 `fetch_bostadsformedlingen()` reads a plain JSON feed rather than scraped
 markup. If its field names ever drift, the terminal prints the first ad's
 actual keys on every run, so you can fix the candidate names in `_bf_field()`
-from that alone.
+from that alone. The same goes for SGS and AF Bostäder — both are plain JSON
+GETs.
+
+**If a whole city comes back empty**, that is usually a source that didn't
+answer rather than a landlord with no vacancies, and the two are now told
+apart. The run prints the reason in full — the HTTP status with whatever
+proxy or CDN sent it, or the actual TLS error rather than the bare word
+`SSLError` — and the reason travels into the payload as `source_notes`, so the
+dashboard says so at the top of the listings panel and links out to the
+provider instead of showing a blank map captioned "No available listings here
+right now". On GitHub Actions each failed source also raises a `::warning::`
+on the run page, because a build that publishes an empty city otherwise reads
+as a perfectly normal green one.
 
 ## 3. Running it
 

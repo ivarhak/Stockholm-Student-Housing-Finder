@@ -155,6 +155,15 @@ jobs:
                     f"shops: {shops}{' — Shops toggle hidden' if not shops else ''} · "
                     f"generated_at {data['generated_at']} · "
                     f"new this run: {len(data.get('new_listing_ids') or [])}")
+              # A city whose sources refused publishes anyway — the dashboard now
+              # says so on the page, and holding back the whole deploy would stop
+              # the *working* cities updating too. But it must not read as a
+              # normal green build: this is the same lesson as the run that
+              # quietly shipped zero shops. ::warning:: puts it on the run page
+              # and into the notification email.
+              for n in data.get("source_notes") or []:
+                  print(f"::warning title={cid}: source failed::"
+                        f"{n.get('source')} {n.get('detail')}")
               index[cid] = {"name": conf["name"], "providers": conf["providers"],
                             "listings": len(data["listings"]),
                             "generated_at": data["generated_at"]}

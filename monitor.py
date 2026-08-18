@@ -343,8 +343,21 @@ def geocode_area(name: str, cache: dict, addresses: dict | None = None,
             time.sleep(1)  # respect Nominatim's 1 req/sec usage policy
             return coords
     except requests.RequestException as e:
+        # NOT cached. This is the distinction geocode_listing_address() already
+        # makes and this function did not: "Nominatim answered, and there is no
+        # such place" is a fact worth remembering, but "we couldn't reach
+        # Nominatim" is a fact about the network this minute. Caching the second
+        # as the first writes `null` for every campus of a new city on one bad
+        # minute, and the file is committed and restored from the Actions cache
+        # — so a transient outage became a permanent one. With no campus
+        # coordinates every commute is unmeasurable, the commute filter hides
+        # every listing, and the city renders as empty forever after.
+        # Reproduced exactly that way while testing offline: seven
+        # `"campus:*": null` entries written from seven proxy errors.
         print(f"  ! geocoding failed for {name}: {e}")
+        return None
 
+    # Nominatim answered and had nothing. That one is worth not asking again.
     cache[name] = None
     _save_geocode_cache(cache)
     return None
@@ -864,9 +877,9 @@ out center tags;
             notes.append(f"{_host(url)} → OK")
             break
         except (requests.RequestException, ValueError) as e:
-            reason = getattr(getattr(e, "response", None), "status_code", None) or type(e).__name__
-            print(f"  · {url} → {reason}")
-            notes.append(f"{_host(url)} → {reason}")
+            short, detail = _why(e)
+            print(f"  · {url} → {detail}")
+            notes.append(f"{_host(url)} → {short}")
 
     if elements is None:
         # Every mirror refused. Routine enough at busy times that it must not cost
@@ -1469,6 +1482,44 @@ def _parse_card_fields(card_text: str):
 
 
 
+def _why(e, resp=None) -> tuple[str, str]:
+    """Why a request failed: (short, detailed). Short is fit for the dashboard,
+    detailed for the terminal.
+
+    This replaces a bare `type(e).__name__`, which cost a whole publish. A live
+    Actions run reported exactly `AF Bostäder → SSLError` and `SGS category
+    residential → 407` — and neither says anything actionable. "SSLError" is an
+    expired certificate, a hostname mismatch and a missing intermediate all at
+    once until you read its message, and a 407 is somebody's proxy refusing on
+    the far end, which names itself in the response headers if you bother to
+    print them. Both cities published an empty map off the back of that.
+
+    Same principle as everything else here: the log is the debugger, so what it
+    prints has to be enough to act on without reproducing the failure.
+    """
+    r = resp if resp is not None else getattr(e, "response", None)
+    if r is not None and getattr(r, "status_code", None):
+        short = f"HTTP {r.status_code}"
+        bits = [short + (f" {r.reason}" if r.reason else "")]
+        # A 407 or 403 from a WAF, proxy or CDN identifies itself in these; the
+        # application behind it never saw the request at all. Printing them is
+        # the difference between "blocked" and "blocked by X, which wants Y".
+        for h in ("Proxy-Authenticate", "WWW-Authenticate", "Server", "Via",
+                  "X-Cache", "CF-Ray", "X-Powered-By"):
+            if r.headers.get(h):
+                bits.append(f"{h}: {r.headers[h]}")
+        try:
+            body = " ".join((r.text or "").split())[:200]
+        except Exception:          # a body that won't even decode is still a clue
+            body = ""
+        if body:
+            bits.append(f"body: {body}")
+        return short, " · ".join(bits)
+    msg = " ".join(str(e).split())
+    short = type(e).__name__
+    return short, f"{short}: {msg}" if msg else short
+
+
 def _decode_json(resp):
     """Parse a JSON response, decoding it the same careful way as HTML.
 
@@ -1986,8 +2037,7 @@ def fetch_bostadsformedlingen() -> list[dict]:
             resp.raise_for_status()
             payload = resp.json()
         except (requests.RequestException, ValueError) as e:
-            reason = getattr(getattr(e, "response", None), "status_code", None) or type(e).__name__
-            print(f"  · {url} → {reason}")
+            print(f"  · {url} → {_why(e)[1]}")
             continue
         # Some endpoints wrap the list in an envelope rather than returning it bare.
         if isinstance(payload, dict):
@@ -2143,7 +2193,15 @@ SGS_SITE = "https://minasidor.sgs.se/market/"
 # **not yet confirmed to work**. A category that fails is reported rather than
 # failing the scrape, so Göteborg can say so and link to it instead.
 # Deliberately excluded: Parkeringsplats, CIS, Ismo.
-SGS_CATEGORIES = ["residential", "VqcHjmtPBDFwFFTVb4fydPxw"]
+#
+# Kept as id → label rather than a bare list because the id is what the API
+# wants and the label is what a person can read: "VqcHjmtPBDFwFFTVb4fydPxw →
+# HTTP 407" is a fine thing to print in a terminal and a terrible thing to show
+# someone looking for a flat.
+SGS_CATEGORIES = {
+    "residential": "Studentbostad",
+    "VqcHjmtPBDFwFFTVb4fydPxw": "Studentbostad Express",
+}
 
 
 def _dotnet_date(value) -> str | None:
@@ -2175,20 +2233,38 @@ def _num(value, cast=float):
 def fetch_sgs(categories=None) -> tuple[list[dict], list[str]]:
     """SGS's vacant objects, as our listing dicts. Returns (listings, notes)."""
     listings, notes, seen = [], [], set()
-    for cat in (categories or SGS_CATEGORIES):
-        url = f"{SGS_API}?type={cat}&limit=200"
+    cats = categories or SGS_CATEGORIES
+    for cat in cats:
+        label = (SGS_CATEGORIES.get(cat) if isinstance(SGS_CATEGORIES, dict) else None) or cat
+        # limit=100 because that is the value the request was actually captured
+        # with, and it returned the full list (`count` mirrors the site's own
+        # "N annonser", so a truncation would show). 200 was a guess on top of a
+        # verified request, which is the wrong way round for this project.
+        url = f"{SGS_API}?type={cat}&limit=100"
         try:
-            resp = requests.get(url, headers={"User-Agent": USER_AGENT,
-                                              "Accept": "application/json"}, timeout=30)
+            resp = requests.get(url, headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json",
+                "Accept-Language": "sv-SE,sv;q=0.9",
+                # The same treatment fetch_bostadsformedlingen() already needs:
+                # this is the API the market page itself calls, and an endpoint
+                # fronted by a WAF can reject anything that doesn't look like it
+                # came from there. The identifying User-Agent above stays — the
+                # point is to look like the page's own request, not to look like
+                # somebody else.
+                "Referer": SGS_SITE,
+                "Origin": "https://minasidor.sgs.se",
+            }, timeout=30)
             resp.raise_for_status()
             payload = _decode_json(resp)
             items = payload.get("items") or []
         except (requests.RequestException, ValueError) as e:
-            reason = getattr(getattr(e, "response", None), "status_code", None) or type(e).__name__
-            print(f"  · SGS category {cat} → {reason}")
-            notes.append(f"{cat} → {reason}")
+            short, detail = _why(e)
+            print(f"  · SGS category {label} ({cat}) → {detail}")
+            notes.append(f"({label}) → {short}")
             continue
-        print(f"  · SGS category {cat} → OK ({payload.get('count', len(items))} advertised)")
+        print(f"  · SGS category {label} ({cat}) → OK "
+              f"({payload.get('count', len(items))} advertised)")
         for it in items:
             oid = it.get("id")
             if not oid or oid in seen:
@@ -2230,7 +2306,15 @@ def fetch_sgs(categories=None) -> tuple[list[dict], list[str]]:
 # The richest of the three feeds: full street address *and* postcode per listing,
 # so Lund gets per-building map dots with no card-text parsing at all, plus a
 # floor and a real application deadline.
-AF_API = "https://afbostader.se/DiremoApi/redimo/rest/vacantproducts"
+# Two hosts, tried in order, for a reason: the apex came from the `redimoUrl`
+# in an inline `var afb = {...}` on their page, not from a captured request, and
+# an apex that only exists to redirect browsers to www often carries a
+# certificate or a TLS chain that a browser papers over and `requests` will not.
+# The first live run failed here with a bare `SSLError`, which is consistent with
+# that and with three other causes — hence _why() above, so the next run says
+# which. Same candidate-list idea as fetch_bostadsformedlingen().
+AF_API_HOSTS = ["https://afbostader.se", "https://www.afbostader.se"]
+AF_API_PATH = "/DiremoApi/redimo/rest/vacantproducts"
 AF_SITE = "https://www.afbostader.se/lediga-bostader/"
 
 
@@ -2240,22 +2324,32 @@ def fetch_afbostader() -> tuple[list[dict], list[str]]:
     `type=1` is housing; the site also advertises förråd (storage), which is a
     different type and filtered out in the query rather than in our code.
     """
-    try:
-        resp = requests.get(AF_API, params={"lang": "sv_SE", "type": "1"},
-                            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-                            timeout=30)
-        resp.raise_for_status()
-        payload = _decode_json(resp)
-    except (requests.RequestException, ValueError) as e:
-        reason = getattr(getattr(e, "response", None), "status_code", None) or type(e).__name__
-        print(f"  · AF Bostäder → {reason}")
-        return [], [f"AF Bostäder → {reason}"]
+    payload, failures = None, []
+    for base in AF_API_HOSTS:
+        try:
+            resp = requests.get(base + AF_API_PATH, params={"lang": "sv_SE", "type": "1"},
+                                headers={"User-Agent": USER_AGENT,
+                                         "Accept": "application/json",
+                                         "Accept-Language": "sv-SE,sv;q=0.9"},
+                                timeout=30)
+            resp.raise_for_status()
+            payload = _decode_json(resp)
+        except (requests.RequestException, ValueError) as e:
+            short, detail = _why(e)
+            print(f"  · AF Bostäder {base} → {detail}")
+            failures.append(short)
+            continue
+        print(f"  · AF Bostäder {base} → OK")
+        break
+
+    if payload is None:
+        return [], [failures[0] if failures else "no response"]
 
     # The envelope carries its own error channel; a 200 with an error set is
     # still a failure and must not be read as "no vacancies".
     if payload.get("error"):
         print(f"  · AF Bostäder returned an error: {payload['error']}")
-        return [], [f"AF Bostäder → {payload['error']}"]
+        return [], [str(payload["error"])]
 
     products = payload.get("product") or []
     print(f"  · AF Bostäder → OK ({len(products)} product(s))")
@@ -2407,7 +2501,13 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
             if not l.get("landlord"):
                 l["landlord"] = spec["provider"]
         listings += rows
-        provider_notes += notes
+        # Tagged with the provider here rather than inside each fetcher, so the
+        # dashboard can name the source that failed and link out to it without
+        # parsing a sentence. A source that answers with nothing and a source
+        # that never answered look identical on a map otherwise — which is
+        # exactly how two whole cities published a blank page that read as
+        # "no vacancies in Göteborg".
+        provider_notes += [{"source": spec["provider"], "detail": n} for n in notes]
 
     # Providers whose listings are placed by area rather than by their own
     # coordinates. This is what decides which areas exist and which listings get
@@ -2606,7 +2706,8 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     if provider_notes:
         # A provider or category that failed is reported rather than silently
         # missing, and the city's coverage note can then link out to it.
-        print("  ! some sources didn't answer: " + "; ".join(provider_notes))
+        print("  ! some sources didn't answer: "
+              + "; ".join(f"{n['source']} {n['detail']}" for n in provider_notes))
     if not had_history:
         print(f"  no previous run to compare against, so none are marked new — "
               f"all {len(listings)} are recorded as first seen now")
@@ -2641,6 +2742,10 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         "max_commute_default": conf.get("max_commute_default", 45),
         "coverage_note": conf.get("coverage_note"),
         "coverage_links": conf.get("coverage_links") or [],
+        # Which sources failed this run, so an empty city says why instead of
+        # claiming there is nothing available. Empty list = everything answered,
+        # and then zero listings really does mean zero vacancies.
+        "source_notes": provider_notes,
         "providers": conf["providers"],
         "area_group_noun": conf.get("area_group_noun", "area"),
         "transit_overlay": conf.get("transit_overlay"),

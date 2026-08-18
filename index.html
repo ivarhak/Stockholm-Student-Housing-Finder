@@ -676,6 +676,28 @@
   #coverageNote[hidden]{display:none;}
   #coverageNote a{color:var(--teal);}
 
+  /* A source that didn't answer this update. Deliberately at the top of the
+     LISTINGS panel and not tucked into QUEUES with the coverage note: this is
+     the one message that explains an empty map, and a tab the reader never
+     opens cannot do that. Clay rather than ochre so it doesn't read as another
+     piece of standing small print. */
+  #sourceAlert{
+    margin:12px 16px 0;
+    padding:10px 12px;
+    background:color-mix(in srgb, var(--clay) 12%, var(--card));
+    border:1px solid var(--rule);
+    border-left:2px solid var(--clay);
+    border-radius:3px;
+    font-family:var(--mono);
+    font-size:10.5px;
+    line-height:1.55;
+    color:var(--ink);
+  }
+  #sourceAlert[hidden]{display:none;}
+  #sourceAlert a{color:var(--teal);}
+  #sourceAlert>div+div{margin-top:5px;}
+  #sourceAlert .why{color:var(--dim);}
+
   /* ── City picker ─────────────────────────────────────────
      Both of these are hidden while only one city exists, so nothing here
      renders until a second one ships. */
@@ -1057,6 +1079,7 @@
       <div class="panel-header" id="panelHeader">
         <h2 id="panelTitle">All available listings</h2>
       </div>
+      <div id="sourceAlert" hidden></div>
       <div id="listings"></div>
     </div>
     <div id="queues">
@@ -1491,6 +1514,8 @@ function applyCityChrome(){
     cov.appendChild(a);
   });
 
+  applySourceAlert();
+
   const preferred = currentData && currentData.max_commute_default;
   if (preferred && !commuteTouched) {
     const slider = document.getElementById('maxCommute');
@@ -1498,6 +1523,65 @@ function applyCityChrome(){
       slider.value = preferred;
       slider.dispatchEvent(new Event('input'));
     }
+  }
+}
+
+// Did every source answer this update? An empty city is only honest news if
+// they did. Göteborg and Lund both published a completely blank map whose only
+// caption was "No available listings here right now" — the reassuring reading —
+// when in fact SGS had returned HTTP 407 and AF Bostäder's TLS handshake had
+// failed, and the run had said so in a log nobody was going to read.
+//
+// Built as DOM nodes rather than innerHTML, same as the coverage note: the
+// strings come from a data file and a data file must never inject markup.
+function sourceFailures(){
+  return ((currentData && currentData.source_notes) || [])
+    .filter(n => n && n.source);
+}
+
+function applySourceAlert(){
+  const box = document.getElementById('sourceAlert');
+  const bad = sourceFailures();
+  box.textContent = '';
+  box.hidden = !bad.length;
+  if (!bad.length) return;
+
+  const names = [...new Set(bad.map(n => n.source))];
+  const got = new Set(((currentData && currentData.listings) || []).map(l => l.provider));
+  // "Nothing at all" and "one of two providers" are different situations and
+  // deserve different sentences — the second still has usable listings below.
+  const total = ((currentData && currentData.providers) || names).length;
+  const lead = names.every(n => !got.has(n)) && names.length >= total
+    ? `No listings this update — ${names.join(' and ')} couldn't be reached.`
+    : `Some listings may be missing — ${names.join(' and ')} couldn't be reached.`;
+  const say = document.createElement('div');
+  say.textContent = lead;
+  box.appendChild(say);
+
+  const why = document.createElement('div');
+  why.className = 'why';
+  // The lead already named the sources, so repeat one only when there are
+  // several to tell apart.
+  why.textContent = bad.map(n => names.length > 1 ? `${n.source} ${n.detail}` : n.detail)
+                       .join(' · ');
+  box.appendChild(why);
+
+  // Somewhere to go, rather than just bad news. The city's own provider links.
+  const links = (currentData && currentData.sources) || [];
+  if (links.length) {
+    const go = document.createElement('div');
+    go.appendChild(document.createTextNode('Check directly: '));
+    links.forEach((lk, i) => {
+      if (!lk || !lk.url) return;
+      if (i) go.appendChild(document.createTextNode(' · '));
+      const a = document.createElement('a');
+      a.href = lk.url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = lk.label || lk.url;
+      go.appendChild(a);
+    });
+    box.appendChild(go);
   }
 }
 
@@ -2376,9 +2460,17 @@ function renderSidebar(){
   rows = sortListings(rows);
 
   if (rows.length === 0) {
+    // Three different situations, and telling them apart matters: your filters
+    // are too tight, the landlord genuinely has nothing, or we never got an
+    // answer. The last one used to render as the second — a fetch that failed
+    // reading as "nothing available", which is the most reassuring possible
+    // wording for the most wrong possible reason. The alert above says what
+    // failed; this just stops contradicting it.
     list.innerHTML = filtersActive()
       ? `<div class="empty-state">Nothing matches your filters.<br>Try raising the queue-days or rent slider.</div>`
-      : `<div class="empty-state">No available listings here right now.<br>Leave the local script running — you'll get a notification the moment something is published.</div>`;
+      : sourceFailures().length
+        ? `<div class="empty-state">Nothing to show — see the note above.<br>This is a problem fetching the data, not an empty market.</div>`
+        : `<div class="empty-state">No available listings here right now.<br>Leave the local script running — you'll get a notification the moment something is published.</div>`;
     return;
   }
 
