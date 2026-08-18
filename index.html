@@ -1300,6 +1300,7 @@ let currentData = null;
 // "nothing changed" from "new scrape landed" without refetching everything.
 let lastGeneratedAt = null;
 let selectedArea = null;   // SSSB area name, or null
+let selectedListingId = null;   // a single pin/building-dot listing, or null
 let markers = [];
 let routeLine = null;
 let browseAll = false;
@@ -2148,7 +2149,9 @@ function renderMap(){
           marker.bindTooltip(`<b>${address}</b><br>${shown.join('<br>')}`, { direction:'top' });
           // Only unambiguous when the building holds one listing; otherwise the
           // sidebar is already showing them all and a click would have to pick.
-          if (!many && rows[0].url) marker.on('click', () => window.open(rows[0].url, '_blank'));
+          // Selects rather than opening the site directly — same reasoning as
+          // the pin-based marker below.
+          if (!many && rows[0].url) marker.on('click', () => selectListing(rows[0].id));
           markers.push(marker);
         });
         return;
@@ -2179,13 +2182,21 @@ function renderMap(){
     const icon = L.divIcon({ className:'', html:'<div class="bf-pin"></div>', iconSize:[13,13] });
     const marker = L.marker(l.coords, { icon }).addTo(leafletMap);
     marker.bindTooltip(`${l.address || l.area} · ${l.rent_sek ? l.rent_sek + ' kr' : ''} (${l.landlord || (providerInfo[l.provider] || {}).abbr || l.provider})`, { direction:'top' });
-    if (l.url) marker.on('click', () => window.open(l.url, '_blank'));
+    // Selects the listing instead of leaving the page immediately — a pin
+    // gives no preview otherwise, unlike an SSSB area roundel which always
+    // opens into the sidebar list first. The card shown is the same row every
+    // other list uses, and clicking THAT still opens the site (handleRowClick
+    // already does that for any row with a url) — so this adds one look
+    // before the click that leaves the dashboard, it doesn't remove the
+    // one-click-through that every other row already offers.
+    if (l.url) marker.on('click', () => selectListing(l.id));
     markers.push(marker);
   });
 }
 
 function selectArea(name){
   selectedArea = name;
+  selectedListingId = null;
   browseAll = false;
   document.getElementById('browseAllBtn').classList.remove('active');
   switchTab('listings');
@@ -2216,10 +2227,30 @@ function selectArea(name){
 
 function clearSelection(){
   selectedArea = null;
+  selectedListingId = null;
   if (routeLine) { leafletMap.removeLayer(routeLine); routeLine = null; }
   // Selection decides whether a spread-out area is drawn as one roundel or as
   // per-building dots, so dropping it has to redraw the map — not just the list.
   renderMap();
+  renderSidebar();
+}
+
+// A pin (private-provider marker) or a single-listing building dot, clicked.
+// Distinct from selectArea(): which building dots dissolve into and how pins
+// draw is decided entirely by zoom and currentData, never by this, so there's
+// nothing here for renderMap() to react to — only the sidebar changes.
+function selectListing(id){
+  selectedListingId = id;
+  selectedArea = null;
+  browseAll = false;
+  document.getElementById('browseAllBtn').classList.remove('active');
+  switchTab('listings');
+  if (routeLine) { leafletMap.removeLayer(routeLine); routeLine = null; }
+  renderSidebar();
+}
+
+function clearListingSelection(){
+  selectedListingId = null;
   renderSidebar();
 }
 
@@ -2366,6 +2397,7 @@ function toggleBrowseAll(){
   document.getElementById('browseAllBtn').classList.toggle('active', browseAll);
   if (browseAll) {
     selectedArea = null;
+    selectedListingId = null;
     if (routeLine) { leafletMap.removeLayer(routeLine); routeLine = null; }
     currentTab = 'listings';
     document.getElementById('tabListings').classList.add('active');
@@ -2429,7 +2461,28 @@ function renderSidebar(){
   }
 
   let rows;
-  if (selectedArea) {
+  // A pin or a single-listing building dot, clicked. Checked first and
+  // defensively re-checked against currentData: the listing can vanish out
+  // from under an open card if a background refresh drops it, and that must
+  // fall through to the default view rather than render a header for nothing.
+  const pickedListing = selectedListingId
+    && currentData.listings.find(x => x.id === selectedListingId);
+  if (selectedListingId && !pickedListing) selectedListingId = null;
+
+  if (pickedListing) {
+    // Same fallback rowHtml() uses for its inline commute text: the area's own
+    // precomputed figure when this listing belongs to one (SSSB — a per-building
+    // dot is a placement detail, not a different commute), else the listing's
+    // own per_school/coords. Reusing it here is what keeps this header's stats
+    // row and the single row shown below it in agreement.
+    const commuteRef = currentData.areas[pickedListing.area] || pickedListing;
+    header.innerHTML = `
+      <button class="back" onclick="clearListingSelection()">← All listings</button>
+      <h2 id="panelTitle">${pickedListing.address || pickedListing.area}</h2>
+      <div class="stats-row">${fmtCommute(commuteRef)}</div>
+    `;
+    rows = [pickedListing];
+  } else if (selectedArea) {
     const area = currentData.areas[selectedArea];
     header.innerHTML = `
       <button class="back" onclick="clearSelection()">← All listings</button>
