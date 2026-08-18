@@ -2827,6 +2827,40 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         print(f"bike times: {routed} of {len(area_info)} area(s) from real cycling routes, "
               f"{len(area_info) - routed} from the straight-line estimate")
 
+    # What the dashboard's own commute filter actually does to this city, in the
+    # same units the slider uses — added after Lund shipped 16 real listings that
+    # still read as "0 found" on the live site. Every earlier line here answers
+    # "did the scrape work"; none of them answer "will a visitor's screen be
+    # empty anyway", and those turned out to be different questions. commuteMinutes()
+    # in index.html prefers transit_min and falls back to bike_min — mirrored here
+    # rather than re-derived, so this print can't quietly drift from what the
+    # frontend actually filters on.
+    default_school = conf["default_school"]
+    if default_school not in conf["schools"]:
+        # Same failure this whole block exists to catch, one step further back:
+        # if the default campus itself has no coordinates, every area's commute
+        # to it is unmeasurable and the dashboard's default view is empty for a
+        # reason this print can't see. Said explicitly rather than the block
+        # below just quietly having nothing to report.
+        print(f"  ! default campus {default_school} has no coordinates this run — "
+              f"every area's commute to it is unmeasurable, so the default filter "
+              f"shows nothing until that resolves")
+    else:
+        commute_min = [
+            (a["per_school"][default_school]["transit_min"]
+             if isinstance(a["per_school"][default_school].get("transit_min"), (int, float))
+             else a["per_school"][default_school]["bike_min"])
+            for a in area_info.values() if a.get("per_school") and a["per_school"].get(default_school)
+        ]
+        if commute_min:
+            cap = conf.get("max_commute_default", 45)
+            within = sum(1 for m in commute_min if m <= cap)
+            print(f"  commute from {default_school} (default campus): "
+                  f"{min(commute_min)}-{max(commute_min)} min across {len(commute_min)} area(s) · "
+                  f"default filter ≤{cap} min shows {within} of {len(commute_min)} "
+                  f"with no slider touched"
+                  + ("" if within else " — EVERY area is past the cap, so the default view is empty"))
+
     # Restated here, next to the run's other headline numbers, because the Overpass
     # block itself prints ~600 lines earlier — near the very start of a scrape. In a
     # terminal you scroll up; in an Actions log you get the tail and nothing else,
