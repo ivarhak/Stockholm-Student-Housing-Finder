@@ -441,23 +441,25 @@ all of them permissive but worth knowing if you fork this:
 
 ## Roadmap
 
-**Göteborg and Lund are written and tested, but not switched on.** Both scrape,
-parse and render — SGS via Göteborg's Momentum API, AF Bostäder in Lund. What's
-missing is a look at the map: their campus addresses and area centres have never
-been geocoded for real, so each city sits in the registry with
-`"enabled": False` and the published site still builds Stockholm alone.
+**Three cities now: Stockholm, Göteborg and Lund.** You pick one on arrival and
+the site shows that one; the choice lives in the URL (`…/#lund`), so it's
+bookmarkable and shareable. Each city brings its own providers, campuses, areas
+and sensible slider defaults — a 45-minute commute filter means something across
+Stockholm's 30 km and nothing in Lund, where everything is a short bike ride.
 
-To check one and turn it on:
+- **Stockholm** — SSSB + Bostadsförmedlingen
+- **Göteborg** — SGS, via the Momentum platform their site runs on
+- **Lund** — AF Bostäder
 
-```sh
-python monitor.py --once --city goteborg   # scrapes for real, geocodes for real
-python monitor.py                          # then open localhost:5055/#goteborg
-```
+Providers differ in what they publish, and the dashboard reads that from the data
+rather than being told: SSSB states queue days, so its rows sort by them; SGS
+publishes no queue figure at all, so its rows say "open now"; AF publishes how
+many people have already applied, so Lund sorts by fewest applicants first. Each
+city's coverage note says plainly what it doesn't cover.
 
-Correct anything silly in `data/geocode_cache.json` (campus entries are keyed
-`campus:Chalmers`), commit that file so the runner doesn't re-resolve them, then
-flip `enabled` to `True` in that city's registry entry. That flag is the only
-switch — the scrape, the picker and the published site all read it.
+**Adding a fourth** is a scraper plus a registry entry in `monitor.py` — areas
+build themselves from the feed where a provider states them. Worth checking
+first whether the landlord runs on Momentum, since that scraper already exists.
 
 **Next up: more student cities.** The scrape, the payload and the dashboard are
 already scoped per city — each one has its own registry entry, its own campuses

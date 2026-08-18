@@ -597,11 +597,8 @@ CITIES = {
     },
     "goteborg": {
         "name": "Göteborg",
-        # Not in the default run yet: its campus addresses and area centres have
-        # never been looked at on a map, and the published site shouldn't be the
-        # place that gets found out. Scrape it explicitly with
-        # `--city goteborg`, check the pins, then flip this to True.
-        "enabled": False,
+        # Live since 2026-08-18, after its pins were checked on a map.
+        "enabled": True,
         # Campus ADDRESSES, not coordinates — resolved once through Nominatim and
         # cached, with data/geocode_cache.json as the hand-correct escape hatch.
         # These addresses are written from knowledge and have NOT been checked
@@ -652,7 +649,7 @@ CITIES = {
     },
     "lund": {
         "name": "Lund",
-        "enabled": False,   # same as Göteborg — see the note there
+        "enabled": True,    # live since 2026-08-18, pins checked
         "schools": {
             "LU":   {"name": "Lunds universitet",
                      "address": "Paradisgatan 2, 223 50 Lund, Sweden"},
