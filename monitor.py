@@ -313,16 +313,20 @@ def _save_geocode_cache(cache):
     GEOCODE_CACHE_FILE.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
 
 
-def geocode_area(name: str, cache: dict) -> tuple | None:
-    """Look up (lat, lon) for an SSSB area name, cached to disk.
+def geocode_area(name: str, cache: dict, addresses: dict | None = None,
+                 city_name: str = "Stockholm") -> tuple | None:
+    """Look up (lat, lon) for a housing area, cached to disk.
 
-    You can hand-correct any entry by editing data/geocode_cache.json directly
-    — e.g. if Nominatim resolves "Pax" to the wrong Pax somewhere in Sweden.
+    `addresses` is the city's own name→street-address table. Stockholm has 26
+    hand-verified ones because SSSB publishes no coordinates and bare area names
+    resolve badly ("Balder" landed 30 km away). A city without such a table falls
+    back to the area name plus the city, which is what the cache is for: you can
+    hand-correct any entry by editing data/geocode_cache.json directly.
     """
     if name in cache and cache[name]:
         return tuple(cache[name])
 
-    query = AREA_ADDRESSES.get(name, f"{name}, Stockholm, Sweden")
+    query = (addresses or AREA_ADDRESSES).get(name, f"{name}, {city_name}, Sweden")
     try:
         resp = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -394,7 +398,10 @@ def _save_address_cache(cache: dict):
     ADDRESS_CACHE_FILE.write_text(json.dumps(cache, indent=1, ensure_ascii=False))
 
 
-def geocode_listing_address(address: str, area: str, cache: dict) -> list | None:
+def geocode_listing_address(address: str, area: str, cache: dict,
+                            hint: str | None = None,
+                            addresses: dict | None = None,
+                            city_name: str = "Stockholm") -> list | None:
     """(lat, lon) for one street address, cached to disk. None if unresolvable.
 
     Queried with the area's own postcode/city tail where we have one, because
@@ -406,12 +413,18 @@ def geocode_listing_address(address: str, area: str, cache: dict) -> list | None
     if address in cache:
         return cache[address]
 
-    # Reuse the area's verified city/postcode tail so the search is anchored to
-    # the right municipality — several of these areas aren't in Stockholm proper
-    # (Solna, Täby, Nacka, Huddinge).
-    area_query = AREA_ADDRESSES.get(area, "")
-    tail = ", ".join(area_query.split(", ")[1:]) if ", " in area_query else "Stockholm, Sweden"
-    query = f"{address}, {tail}"
+    # A feed that states its own postcode and town (AF Bostäder does) is already
+    # unambiguous, so use it verbatim rather than guessing a tail.
+    if hint:
+        query = hint
+    else:
+        # Otherwise reuse the area's verified city/postcode tail so the search is
+        # anchored to the right municipality — several Stockholm areas aren't in
+        # Stockholm proper (Solna, Täby, Nacka, Huddinge).
+        area_query = (addresses or AREA_ADDRESSES).get(area, "")
+        tail = (", ".join(area_query.split(", ")[1:]) if ", " in area_query
+                else f"{city_name}, Sweden")
+        query = f"{address}, {tail}"
     coords = None
     try:
         resp = requests.get(
@@ -552,6 +565,7 @@ CITIES = {
         "area_addresses": AREA_ADDRESSES,
         "area_aliases": AREA_ALIASES,
         "providers": ["SSSB", "Bostadsförmedlingen"],
+        "fetchers": ["sssb", "bostadsformedlingen"],
         # What this city's data does and doesn't cover, shown on the page. Every
         # city needs one: none of them is the whole market, and a dashboard that
         # doesn't say so reads as "there is nothing else", which is worse than
@@ -573,8 +587,126 @@ CITIES = {
         # What the dashboard's max-commute slider opens at.
         "max_commute_default": 45,
     },
+    "goteborg": {
+        "name": "Göteborg",
+        # Not in the default run yet: its campus addresses and area centres have
+        # never been looked at on a map, and the published site shouldn't be the
+        # place that gets found out. Scrape it explicitly with
+        # `--city goteborg`, check the pins, then flip this to True.
+        "enabled": False,
+        # Campus ADDRESSES, not coordinates — resolved once through Nominatim and
+        # cached, with data/geocode_cache.json as the hand-correct escape hatch.
+        # These addresses are written from knowledge and have NOT been checked
+        # against a map; the first run's pins are worth eyeballing.
+        "schools": {
+            # Chalmers' two campuses are separate entries on purpose: they sit
+            # across the river from each other and are a real commute apart, so
+            # "which campus" genuinely changes the answer.
+            "Chalmers":   {"name": "Chalmers tekniska högskola (Johanneberg)",
+                           "address": "Chalmersplatsen 4, 412 58 Göteborg, Sweden"},
+            "Chalmers-L": {"name": "Chalmers Lindholmen",
+                           "address": "Lindholmsplatsen 1, 417 56 Göteborg, Sweden"},
+            "GU":         {"name": "Göteborgs universitet (Näckrosen)",
+                           "address": "Renströmsgatan 6, 412 55 Göteborg, Sweden"},
+            "Handels":    {"name": "Handelshögskolan vid Göteborgs universitet",
+                           "address": "Vasagatan 1, 411 24 Göteborg, Sweden"},
+            "Sahlgrenska":{"name": "Sahlgrenska akademin",
+                           "address": "Medicinaregatan 3, 413 90 Göteborg, Sweden"},
+            "HDK-Valand": {"name": "HDK-Valand (konst och design)",
+                           "address": "Vasagatan 50, 411 37 Göteborg, Sweden"},
+            "HSM":        {"name": "Högskolan för scen och musik",
+                           "address": "Fågelsången 1, 412 56 Göteborg, Sweden"},
+        },
+        "default_school": "Chalmers",
+        # No `areas` / `area_addresses`: SGS publishes the area on every listing,
+        # so the list builds itself and a new SGS area appears on the map without
+        # anyone editing this file.
+        "providers": ["SGS"],
+        "fetchers": ["sgs"],
+        "coverage_note": ("Covers SGS Studentbostad, Göteborg's biggest student "
+                          "landlord. SGS publishes no queue figure, so listings show "
+                          "when the contract starts rather than a queue length — you "
+                          "apply and the longest queue wins. Studentbostad Express "
+                          "couldn't be read automatically, and Chalmers "
+                          "Studentbostäder and Boplats aren't included yet:"),
+        "coverage_links": [
+            {"label": "SGS Studentbostad Express",
+             "url": "https://minasidor.sgs.se/market/VqcHjmtPBDFwFFTVb4fydPxw"},
+            {"label": "Chalmers Studentbostäder",
+             "url": "https://www.chalmersstudentbostader.se/sok-ledigt/"},
+            {"label": "Boplats Göteborg",
+             "url": "https://boplats.se/sok?types=1hand&objecttype=student"},
+        ],
+        "area_group_noun": "area",
+        "grocery_bbox": (57.60, 11.75, 57.80, 12.15),
+        "max_commute_default": 30,
+    },
+    "lund": {
+        "name": "Lund",
+        "enabled": False,   # same as Göteborg — see the note there
+        "schools": {
+            "LU":   {"name": "Lunds universitet",
+                     "address": "Paradisgatan 2, 223 50 Lund, Sweden"},
+            "LTH":  {"name": "Lunds tekniska högskola",
+                     "address": "John Ericssons väg 3, 223 63 Lund, Sweden"},
+            "SLU":  {"name": "SLU Alnarp",
+                     "address": "Slottsvägen 5, 234 56 Alnarp, Sweden"},
+            # These two are Lund University faculties that are physically in
+            # MALMÖ. Listing them with a Lund-shaped commute would be actively
+            # wrong, so they get their real addresses and the numbers are allowed
+            # to say forty minutes.
+            "MHM":  {"name": "Musikhögskolan i Malmö (Lunds universitet)",
+                     "address": "Ystadvägen 25, 214 45 Malmö, Sweden"},
+            "KHM":  {"name": "Konsthögskolan i Malmö (Lunds universitet)",
+                     "address": "Ystadvägen 18, 214 45 Malmö, Sweden"},
+        },
+        "default_school": "LU",
+        # AF Bostäder states a full street address and postcode on every listing,
+        # so areas and their centres both come out of the feed.
+        "providers": ["AF Bostäder"],
+        "fetchers": ["afbostader"],
+        "coverage_note": ("Covers AF Bostäder, which runs about 6,000 of Lund's "
+                          "student rooms. They publish no per-listing queue length, "
+                          "so rows show how many people have already applied "
+                          "instead. LKF, the municipal landlord, has no public "
+                          "vacancy list we could find — check them separately:"),
+        "coverage_links": [
+            {"label": "LKF", "url": "https://www.lkf.se/"},
+            {"label": "Boplats Syd", "url": "https://www.boplatssyd.se/"},
+        ],
+        "area_group_noun": "area",
+        "grocery_bbox": (55.63, 13.05, 55.78, 13.30),
+        # Lund is small enough that essentially everything is a short bike ride,
+        # so a 45-minute cap would filter nothing at all.
+        "max_commute_default": 20,
+    },
 }
 DEFAULT_CITY = "stockholm"
+
+
+def resolve_schools(conf: dict, cache: dict) -> dict:
+    """Fill in coordinates for any campus given only a street address.
+
+    Stockholm's seven are hand-verified literals, which was fine for one city and
+    doesn't scale to three. New cities give each campus an address and it is
+    resolved through the same Nominatim + geocode_cache.json path the areas use —
+    including the hand-correct escape hatch, which is how a silly pin gets fixed
+    here. A campus that won't resolve is dropped with a warning rather than
+    silently sitting at (0, 0) off the coast of Africa.
+    """
+    out = {}
+    for sid, school in conf["schools"].items():
+        coords = school.get("coords")
+        if not coords and school.get("address"):
+            key = f"campus:{sid}"
+            coords = cache.get(key) or geocode_area(
+                key, cache, addresses={key: school["address"]}, city_name=conf["name"])
+        if not coords:
+            print(f"  ! campus {sid} has no coordinates and its address wouldn't "
+                  f"resolve — leaving it out of this run")
+            continue
+        out[sid] = {"name": school["name"], "coords": tuple(coords)}
+    return out
 
 
 def city_conf(city: str) -> dict:
@@ -610,6 +742,8 @@ def write_cities_index():
     """
     index = {}
     for cid, conf in CITIES.items():
+        if not conf.get("enabled", True):
+            continue
         path = listings_file(cid)
         if not path.exists() and cid == DEFAULT_CITY:
             path = _legacy_listings_file()
@@ -1328,6 +1462,18 @@ def _parse_card_fields(card_text: str):
 
 
 
+def _decode_json(resp):
+    """Parse a JSON response, decoding it the same careful way as HTML.
+
+    Same trap as _decode_response(): a server that sends `application/json` with
+    no charset gets ISO-8859-1 from requests, and these feeds are full of
+    Swedish — "Olofshöjd", "Enkelrum med gruppkök", "Kämnärsvägen". JSON is
+    UTF-8 by definition (RFC 8259), so prefer it and only fall back if it
+    genuinely isn't.
+    """
+    return json.loads(_decode_response(resp))
+
+
 def _decode_response(resp) -> str:
     """Decode an HTTP response to text, preferring UTF-8 over requests' default.
 
@@ -1972,6 +2118,233 @@ def fetch_bostadsformedlingen() -> list[dict]:
     return listings
 
 
+# ── SGS Studentbostäder, Göteborg ────────────────────────────────────────
+#
+# SGS runs on **Momentum**, a property-management platform — note the host and
+# the `/Prod/sgs/` tenant segment. That matters beyond Göteborg: any other
+# Swedish student landlord on Momentum exposes this same API at a different
+# tenant path, so a second Momentum city is a URL change rather than a new
+# scraper. Worth checking before writing one from scratch.
+#
+# Plain JSON GET, no auth, no cookie — a ~2 second scrape, against the ~1 minute
+# Chrome costs for SSSB's JS shell.
+SGS_API = "https://sgs-fastighet.momentum.se/Prod/sgs/PmApi/v2/market/objects"
+SGS_SITE = "https://minasidor.sgs.se/market/"
+# Categories are opaque ids in their system; `residential` (Studentbostad) just
+# happens to be readable. The second is "Studentbostad Express", inferred from
+# its page route — the main list's route segment is exactly this parameter — and
+# **not yet confirmed to work**. A category that fails is reported rather than
+# failing the scrape, so Göteborg can say so and link to it instead.
+# Deliberately excluded: Parkeringsplats, CIS, Ismo.
+SGS_CATEGORIES = ["residential", "VqcHjmtPBDFwFFTVb4fydPxw"]
+
+
+def _dotnet_date(value) -> str | None:
+    """`/Date(1790805600000)/` -> `'2026-09-30'`.
+
+    ASP.NET's JSON date format: epoch milliseconds wrapped in a string. Handing
+    this to fromisoformat throws, which is the obvious wrong guess.
+    """
+    m = re.search(r"/Date\((-?\d+)\)/", str(value or ""))
+    if not m:
+        return None
+    try:
+        return datetime.fromtimestamp(int(m.group(1)) / 1000, timezone.utc).date().isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _num(value, cast=float):
+    """Feeds arrive with numbers quoted, blank or absent. None means "not stated",
+    which the dashboard keeps distinct from zero."""
+    if value in (None, "", " "):
+        return None
+    try:
+        return cast(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_sgs(categories=None) -> tuple[list[dict], list[str]]:
+    """SGS's vacant objects, as our listing dicts. Returns (listings, notes)."""
+    listings, notes, seen = [], [], set()
+    for cat in (categories or SGS_CATEGORIES):
+        url = f"{SGS_API}?type={cat}&limit=200"
+        try:
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT,
+                                              "Accept": "application/json"}, timeout=30)
+            resp.raise_for_status()
+            payload = _decode_json(resp)
+            items = payload.get("items") or []
+        except (requests.RequestException, ValueError) as e:
+            reason = getattr(getattr(e, "response", None), "status_code", None) or type(e).__name__
+            print(f"  · SGS category {cat} → {reason}")
+            notes.append(f"{cat} → {reason}")
+            continue
+        print(f"  · SGS category {cat} → OK ({payload.get('count', len(items))} advertised)")
+        for it in items:
+            oid = it.get("id")
+            if not oid or oid in seen:
+                continue
+            seen.add(oid)
+            size = it.get("size") or {}
+            area = ((it.get("location") or {}).get("area") or {}).get("displayName")
+            listings.append({
+                "id": f"sgs-{oid}",
+                # The live data has a trailing space on some of these.
+                "address": (it.get("displayName") or "").strip() or None,
+                "area": (area or "").strip() or "Unknown",
+                "type": size.get("roomsDisplayName"),
+                # A float like 4745.7200 — rent is shown to the krona.
+                "rent_sek": (lambda v: None if v is None else round(v))(
+                    _num((it.get("pricing") or {}).get("price"))),
+                "size_sqm": _num(size.get("area")),
+                # SGS publishes none of these three, and a made-up value would be
+                # worse than an honest gap: the dashboard already treats None as
+                # "not stated" and never filters a listing out for it.
+                "queue_days": None,
+                "floor": None,
+                "coords": None,
+                "max_years": None,
+                "el_included": None,
+                "available_from": _dotnet_date((it.get("availability") or {}).get("availableFrom")),
+                "deadline": None,
+                "tagline": it.get("description"),
+                "url": SGS_SITE + str(oid),
+                "provider": "SGS",
+                "landlord": "SGS Studentbostäder",
+            })
+    print(f"  kept {len(listings)} SGS listing(s)")
+    return listings, notes
+
+
+# ── AF Bostäder, Lund ────────────────────────────────────────────────────
+#
+# The richest of the three feeds: full street address *and* postcode per listing,
+# so Lund gets per-building map dots with no card-text parsing at all, plus a
+# floor and a real application deadline.
+AF_API = "https://afbostader.se/DiremoApi/redimo/rest/vacantproducts"
+AF_SITE = "https://www.afbostader.se/lediga-bostader/"
+
+
+def fetch_afbostader() -> tuple[list[dict], list[str]]:
+    """AF Bostäder's vacant student housing. Returns (listings, notes).
+
+    `type=1` is housing; the site also advertises förråd (storage), which is a
+    different type and filtered out in the query rather than in our code.
+    """
+    try:
+        resp = requests.get(AF_API, params={"lang": "sv_SE", "type": "1"},
+                            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                            timeout=30)
+        resp.raise_for_status()
+        payload = _decode_json(resp)
+    except (requests.RequestException, ValueError) as e:
+        reason = getattr(getattr(e, "response", None), "status_code", None) or type(e).__name__
+        print(f"  · AF Bostäder → {reason}")
+        return [], [f"AF Bostäder → {reason}"]
+
+    # The envelope carries its own error channel; a 200 with an error set is
+    # still a failure and must not be read as "no vacancies".
+    if payload.get("error"):
+        print(f"  · AF Bostäder returned an error: {payload['error']}")
+        return [], [f"AF Bostäder → {payload['error']}"]
+
+    products = payload.get("product") or []
+    print(f"  · AF Bostäder → OK ({len(products)} product(s))")
+    listings = []
+    for it in products:
+        # Everything arrives as a string, including the numbers.
+        zipcode = (it.get("zipcode") or "").strip()
+        town = (it.get("city") or "").strip().title()
+        address = (it.get("address") or "").strip() or None
+        listings.append({
+            "id": f"af-{it.get('productId')}",
+            "address": address,
+            "area": (it.get("area") or "").strip() or "Unknown",
+            "type": it.get("shortDescription") or it.get("type"),
+            "rent_sek": _num(it.get("rent"), int),
+            "size_sqm": _num(it.get("sqrMtrs")),
+            "floor": _num(it.get("floor"), int),
+            # NOT queueNumber. That field is "Din plats just nu" — your own place
+            # in the queue — and comes back "1" on every row for a logged-out
+            # caller, so mapping it would print a confident, wrong "1 day" on
+            # every Lund listing. AF publishes no per-listing queue figure.
+            "queue_days": None,
+            # What it publishes instead, and it discriminates well: how many
+            # people have already applied. 40 versus 6 is the whole answer.
+            "applicants": _num(it.get("numberOfReservations"), int),
+            "deadline": (it.get("reserveUntilDate") or None),
+            "available_from": (it.get("moveInDate") or None),
+            # Reserved for students new to Lund.
+            "novice_priority": (it.get("priority") == "Novisch"),
+            "contract_months": _num(it.get("rentalPeriods"), int),
+            "coords": None,
+            "max_years": None,
+            "el_included": None,
+            # Postcode and town are what make the address unambiguous nationally,
+            # the same anchoring geocode_listing_address() does for SSSB.
+            "geocode_hint": ", ".join(x for x in (address, zipcode, town, "Sweden") if x),
+            "url": AF_SITE,
+            "provider": "AF Bostäder",
+            "landlord": "AF Bostäder",
+        })
+    return listings, []
+
+
+def fetch_sssb(debug: bool = False, use_login: bool = False,
+               http_only: bool = False, **_) -> tuple[list[dict], list[str]]:
+    """SSSB's vacancy list. Plain HTTP first, Chrome only if that yields nothing.
+
+    Kept as the slow path it is: SSSB's page is a JS shell, so this almost always
+    ends up in Selenium and costs about a minute. The cheap attempt stays because
+    it costs one request and would start working the moment the page becomes
+    server-rendered.
+    """
+    rows = None
+    if not use_login:
+        rows = fetch_sssb_http(debug=debug)
+        if rows is None and http_only:
+            raise SystemExit(
+                "--http-only was requested but the vacancy list couldn't be read without a "
+                "browser (see the diagnostics above). Drop --http-only to fall back to Selenium."
+            )
+    elif http_only:
+        raise SystemExit("--http-only and --with-login are contradictory: logging in needs a browser.")
+
+    if rows is None:
+        print("falling back to the browser..." if not use_login
+              else "launching browser + logging in...")
+        driver = init_driver(headless=not debug)
+        try:
+            if use_login:
+                login(driver)
+            print("scraping listings...")
+            rows = scrape_listings(driver, debug=debug)
+        finally:
+            driver.quit()
+
+    for l in rows:
+        l["provider"] = "SSSB"
+        l["landlord"] = "SSSB"
+    return rows, []
+
+
+# Which fetchers exist, and — the part that matters — whether each one's listings
+# are placed by *area* or by their own coordinates. That single flag decides
+# which listings get an address geocoded, which areas exist at all, and which get
+# a roundel rather than a pin. The dashboard reaches the same split from the data
+# alone; this is the scrape's side of the same distinction.
+PROVIDER_FETCHERS = {
+    "sssb":                {"fn": fetch_sssb, "provider": "SSSB", "areas": True},
+    "bostadsformedlingen": {"fn": lambda **kw: (fetch_bostadsformedlingen(), []),
+                            "provider": "Bostadsförmedlingen", "areas": False},
+    "sgs":                 {"fn": lambda **kw: fetch_sgs(), "provider": "SGS", "areas": True},
+    "afbostader":          {"fn": lambda **kw: fetch_afbostader(),
+                            "provider": "AF Bostäder", "areas": True},
+}
+
+
 def run_scrape(debug: bool = False, use_login: bool = False,
                http_only: bool = False, bike_routes: bool = True,
                bf_bike_routes: bool = False, city: str = DEFAULT_CITY) -> dict:
@@ -1989,6 +2362,9 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     previous = load_previous(city)
 
     geocode_cache = _load_geocode_cache()
+    # Campuses may be given as addresses rather than coordinates; resolve once,
+    # then everything downstream sees the same shape Stockholm always had.
+    conf = {**conf, "schools": resolve_schools(conf, geocode_cache)}
     grocery_stores, grocery_notes = fetch_grocery_stores(conf["grocery_bbox"])
     if not grocery_stores and previous.get("groceries"):
         # Last line of defence: a lookup that failed with no cache on disk would
@@ -1998,94 +2374,123 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         grocery_stores = previous["groceries"]
         print(f"  reusing {len(grocery_stores)} store(s) from the previous run's data")
         grocery_notes.append(f"reused {len(grocery_stores)} from the previous run")
-    print("geocoding areas (cached after first run)...")
-    if bike_routes:
-        print(f"working out cycling routes to {len(conf['schools'])} campuses "
-              "(real bike directions, cached to data/bike_route_cache.json — "
-              "the first run is slow, later ones aren't)...")
-    area_info = {}
-    for group, names in conf["areas"].items():
-        for name in names:
-            coords = geocode_area(name, geocode_cache)
-            per_school = (commute_to_all_schools(coords, with_bike_routes=bike_routes,
-                                                 schools=conf["schools"])
-                          if coords else None)
-            area_info[name] = {
-                "group": group,
-                "coords": coords,
-                # Per-campus numbers drive the dashboard's campus dropdown.
-                "per_school": per_school,
-                # Kept at the top level too, pointing at the default campus, so
-                # older saved files and any code reading the old shape still work.
-                "straight_line": straight_line_estimate(coords) if coords else None,
-                "transit_min": (per_school[conf["default_school"]]["transit_min"]
-                                if per_school else None),
-                # One number beats 300 map dots for "can I buy food here" — the
-                # dots are for browsing, this is for deciding.
-                "nearest_grocery": (nearest_grocery(coords, grocery_stores)
-                                    if coords and grocery_stores else None),
-            }
 
-    sssb_listings = None
-    # Try the plain-HTTP path first: it's much faster than launching Chrome and
-    # doesn't depend on a working driver. Falls through to Selenium if the raw
-    # HTML turns out to be a JS shell.
-    if not use_login:
-        sssb_listings = fetch_sssb_http(debug=debug)
-        if sssb_listings is None and http_only:
-            raise SystemExit(
-                "--http-only was requested but the vacancy list couldn't be read without a "
-                "browser (see the diagnostics above). Drop --http-only to fall back to Selenium."
-            )
-    elif http_only:
-        raise SystemExit("--http-only and --with-login are contradictory: logging in needs a browser.")
+    # ── 1. Listings, from whichever providers this city has ──────────────
+    #
+    # The order matters and it changed: listings are fetched *before* areas are
+    # built, because a city without a hand-written area table derives its areas
+    # from what its listings actually report. Stockholm has such a table and is
+    # unaffected; Göteborg and Lund would otherwise need 30-odd areas typed out
+    # by hand and kept in step with the landlord forever.
+    listings, provider_notes = [], []
+    for key in conf["fetchers"]:
+        spec = PROVIDER_FETCHERS.get(key)
+        if not spec:
+            raise SystemExit(f"{city}: unknown provider fetcher {key!r} — known: "
+                             f"{', '.join(sorted(PROVIDER_FETCHERS))}")
+        rows, notes = spec["fn"](debug=debug, use_login=use_login, http_only=http_only)
+        # Stamped here rather than trusted from the fetcher. A fetcher that
+        # forgot would otherwise have its listings quietly treated as
+        # coordinate-based, which skips their address geocoding and leaves them
+        # off the map entirely — a silent wrong answer rather than an error.
+        # setdefault-style so a real landlord (BF's queue name) still wins.
+        for l in rows:
+            if not l.get("provider"):
+                l["provider"] = spec["provider"]
+            if not l.get("landlord"):
+                l["landlord"] = spec["provider"]
+        listings += rows
+        provider_notes += notes
 
-    if sssb_listings is None:
-        print("falling back to the browser..." if not use_login
-              else "launching browser + logging in...")
-        driver = init_driver(headless=not debug)
-        try:
-            if use_login:
-                login(driver)
-            print("scraping listings...")
-            sssb_listings = scrape_listings(driver, debug=debug)
-        finally:
-            driver.quit()
+    # Providers whose listings are placed by area rather than by their own
+    # coordinates. This is what decides which areas exist and which listings get
+    # geocoded from an address; the dashboard reaches the same split from the
+    # data alone, by checking whether a listing's area is one we have.
+    area_providers = {p for key in conf["fetchers"]
+                      if PROVIDER_FETCHERS[key]["areas"]
+                      for p in [PROVIDER_FETCHERS[key]["provider"]]}
+    area_rows = [l for l in listings if l.get("provider") in area_providers]
 
-    for l in sssb_listings:
-        l["provider"] = "SSSB"
-        l["landlord"] = "SSSB"
-
-    # Place each SSSB listing at its own building, so the map can break an area
-    # roundel apart when you zoom into it. Distinct addresses only — a dozen rooms
-    # in one building share a lookup — and cached forever, since buildings don't
-    # move. Anything unresolved keeps `coords: None` and stays at the area centre.
+    # ── 2. Put each area-based listing at its own building ───────────────
+    #
+    # Distinct addresses only — a dozen rooms in one building share a lookup —
+    # and cached forever, since buildings don't move. Anything unresolved keeps
+    # `coords: None` and stays at the area centre.
     addr_cache = _load_address_cache()
-    wanted = sorted({(l["address"], l["area"]) for l in sssb_listings if l.get("address")})
+    wanted, hints = [], {}
+    for l in area_rows:
+        if not l.get("address"):
+            continue
+        if l["address"] not in hints:
+            wanted.append((l["address"], l.get("area")))
+            hints[l["address"]] = l.get("geocode_hint")
+    wanted.sort()
     fresh = [a for a, _ in wanted if a not in addr_cache]
     if fresh:
         print(f"geocoding {len(fresh)} new building address(es) "
               f"({len(wanted) - len(fresh)} already cached, ~1s each)...")
     for address, area in wanted:
-        geocode_listing_address(address, area, addr_cache)
-    for l in sssb_listings:
+        geocode_listing_address(address, area, addr_cache, hint=hints.get(address),
+                                addresses=conf.get("area_addresses"),
+                                city_name=conf["name"])
+    for l in area_rows:
         l["coords"] = addr_cache.get(l.get("address")) if l.get("address") else None
 
+    # ── 3. The areas themselves ──────────────────────────────────────────
+    if conf.get("areas"):
+        area_groups = {name: group for group, names in conf["areas"].items() for name in names}
+    else:
+        # Derived from the feed, so a new area appears on the map by itself. The
+        # single group is deliberate: without a published grouping there is
+        # nothing honest to colour by, and the dashboard hides a one-group strip.
+        area_groups = {l["area"]: conf["name"] for l in area_rows
+                       if l.get("area") and l["area"] != "Unknown"}
+        print(f"  {len(area_groups)} area(s) derived from the listings themselves")
+
+    print("geocoding areas (cached after first run)...")
+    if bike_routes:
+        print(f"working out cycling routes to {len(conf['schools'])} campuses "
+              "(real bike directions, cached to data/bike_route_cache.json — "
+              "the first run is slow, later ones aren't)...")
+
+    area_coords = {}
+    for name, group in area_groups.items():
+        coords = None
+        if (conf.get("area_addresses") or {}).get(name) or conf.get("areas"):
+            coords = geocode_area(name, geocode_cache,
+                                  addresses=conf.get("area_addresses"),
+                                  city_name=conf["name"])
+        if not coords:
+            # No table entry: take the area's own listings as the answer. The
+            # *median* rather than the mean, so one address that resolved to
+            # another municipality can't drag the centre — which matters because
+            # this centre is then the anchor the outlier check below trusts.
+            here = sorted(tuple(l["coords"]) for l in area_rows
+                          if l.get("area") == name and l.get("coords"))
+            if here:
+                mid = len(here) // 2
+                coords = (sorted(c[0] for c in here)[mid], sorted(c[1] for c in here)[mid])
+        if not coords:
+            coords = geocode_area(name, geocode_cache,
+                                  addresses=conf.get("area_addresses"),
+                                  city_name=conf["name"])
+        area_coords[name] = coords
+
+    # ── 4. Reject buildings that landed implausibly far from their area ──
+    #
     # A geocoder will happily hand back a street of the same name in a different
-    # municipality, and nothing downstream would notice: the dot lands miles away,
-    # and worse, that fake distance pushes the area over the split threshold so its
-    # roundel dissolves into per-building dots for a reason that isn't real.
-    # Confirmed live on 2026-08-09 — Domus, a single block on Körsbärsvägen,
-    # reported a 15,948 m spread. An address is by definition inside its own area,
-    # so anything implausibly far from the area centre is wrong; drop it back to
-    # the centre, which is exactly where every listing sat before per-building dots
-    # existed.
+    # municipality, and nothing downstream would notice: the dot lands miles
+    # away, and worse, that fake distance pushes the area over the split
+    # threshold so its roundel dissolves into per-building dots for a reason that
+    # isn't real. Confirmed live on 2026-08-09 — Domus, a single block on
+    # Körsbärsvägen, reported a 15,948 m spread.
     #
     # Checked here rather than inside geocode_listing_address() on purpose: this
     # way it also catches entries already sitting in the cache (including the one
     # the Actions runner restores), so a bad answer stops mattering immediately
     # instead of needing the cache purged first.
-    misplaced = drop_misplaced_addresses(sssb_listings, area_info)
+    misplaced = drop_misplaced_addresses(
+        area_rows, {n: {"coords": c} for n, c in area_coords.items()})
     if misplaced:
         print(f"  ! {len(misplaced)} address(es) resolved more than "
               f"{MAX_ADDRESS_OFFSET_M / 1000:g} km from their own area and were dropped "
@@ -2094,29 +2499,50 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
               "properly:")
         for address, (area, off_m) in sorted(misplaced.items(), key=lambda kv: -kv[1][1]):
             print(f"    · {address!r} ({area}) — {off_m / 1000:.1f} km away")
-        # The area centre is the trusted anchor here (those 26 coordinates are
-        # hand-verified and committed), so a single stray address means a bad
-        # address lookup. If instead *every* address in one area shows up above,
-        # suspect the anchor rather than the addresses.
+        # Where the city has a hand-verified table the centre is the trusted
+        # anchor, so a single stray address means a bad address lookup. If
+        # *every* address in one area shows up, suspect the anchor instead.
         from collections import Counter
         by_area = Counter(area for area, _ in misplaced.values())
         for area, n in by_area.items():
-            in_area = len({l["address"] for l in sssb_listings
-                           if l["area"] == area and l.get("address")})
+            in_area = len({l["address"] for l in area_rows
+                           if l.get("area") == area and l.get("address")})
             if n == in_area and in_area > 1:
                 print(f"    ! that's every address in {area} — more likely its own centre "
                       "is wrong in data/geocode_cache.json than all of its buildings")
 
-    located = sum(1 for l in sssb_listings if l["coords"])
-    print(f"  {located} of {len(sssb_listings)} SSSB listing(s) placed at their own "
+    located = sum(1 for l in area_rows if l.get("coords"))
+    print(f"  {located} of {len(area_rows)} area-based listing(s) placed at their own "
           f"building ({len(wanted)} distinct address(es))")
+
+    # ── 5. Commutes, per area and per pin ────────────────────────────────
+    area_info = {}
+    for name, group in area_groups.items():
+        coords = area_coords.get(name)
+        per_school = (commute_to_all_schools(coords, with_bike_routes=bike_routes,
+                                             schools=conf["schools"])
+                      if coords else None)
+        area_info[name] = {
+            "group": group,
+            "coords": list(coords) if coords else None,
+            # Per-campus numbers drive the dashboard's campus dropdown.
+            "per_school": per_school,
+            # Kept at the top level too, pointing at the default campus, so
+            # older saved files and any code reading the old shape still work.
+            "straight_line": straight_line_estimate(coords) if coords else None,
+            "transit_min": (per_school[conf["default_school"]]["transit_min"]
+                            if per_school else None),
+            # One number beats 300 map dots for "can I buy food here" — the
+            # dots are for browsing, this is for deciding.
+            "nearest_grocery": (nearest_grocery(coords, grocery_stores)
+                                if coords and grocery_stores else None),
+        }
 
     # How spread out each area's listings actually are. The dashboard uses this to
     # decide which roundels are worth dissolving into per-building dots: a single
     # block comes out near zero, a campus like Lappkärrsberget in the hundreds.
     for name, area in area_info.items():
-        here = [l["coords"] for l in sssb_listings
-                if l["area"] == name and l["coords"]]
+        here = [l["coords"] for l in area_rows if l.get("area") == name and l.get("coords")]
         area["spread_m"] = area_spread_m(here)
         area["located_listings"] = len(here)
     spread_areas = {n: a["spread_m"] for n, a in area_info.items() if a["spread_m"] >= 120}
@@ -2125,26 +2551,24 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
               + ", ".join(f"{n} ({m} m)" for n, m in
                           sorted(spread_areas.items(), key=lambda kv: -kv[1])))
 
-    bf_listings = fetch_bostadsformedlingen()
-    # Bostadsförmedlingen ads get straight-line estimates rather than routed
-    # bike times by default. There are ~100 of them and they churn, so routing
-    # them costs ~100 x len(SCHOOLS) requests — around 700, i.e. ~9 minutes of
-    # paced requests — and most of that work is thrown away as ads rotate. The
-    # 26 SSSB areas are a fixed set worth routing once; these aren't.
+    # Pin-based ads get straight-line estimates rather than routed bike times by
+    # default. There are ~100 of them and they churn, so routing them costs
+    # ~100 x len(SCHOOLS) requests — around 700, i.e. ~9 minutes of paced
+    # requests — and most of that work is thrown away as ads rotate. A city's
+    # areas are a fixed set worth routing once; these aren't.
     # `--bike-routes-bf` opts in when you want the accuracy anyway.
-    if bf_listings:
-        print(f"working out commutes for {len(bf_listings)} Bostadsförmedlingen ad(s)"
+    pin_rows = [l for l in listings if l.get("provider") not in area_providers]
+    if pin_rows:
+        print(f"working out commutes for {len(pin_rows)} per-coordinate ad(s)"
               + (" with real cycling routes (slow)..." if bf_bike_routes
                  else " using straight-line estimates (--bike-routes-bf for real routes)..."))
-    for l in bf_listings:
-        if l["coords"]:
+    for l in pin_rows:
+        if l.get("coords"):
             l["per_school"] = commute_to_all_schools(
                 tuple(l["coords"]), with_bike_routes=bike_routes and bf_bike_routes,
                 schools=conf["schools"])
             l["straight_line"] = straight_line_estimate(tuple(l["coords"]))
             l["transit_min"] = l["per_school"][conf["default_school"]]["transit_min"]
-
-    listings = sssb_listings + bf_listings
 
     # Carry each listing's first-seen timestamp forward, then derive NEW from it.
     # With no usable history at all, every listing is recorded as first_seen=None
@@ -2168,8 +2592,14 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
         else:
             l["first_seen"] = now.isoformat()
     new_listings = [l for l in listings if _seen_recently(l["first_seen"], now)]
-    print(f"found {len(listings)} listings total — {len(sssb_listings)} SSSB, "
-          f"{len(bf_listings)} Bostadsförmedlingen")
+    from collections import Counter as _C
+    by_provider = _C(l.get("provider") or "?" for l in listings)
+    print(f"found {len(listings)} listings total — "
+          + ", ".join(f"{n} {p}" for p, n in by_provider.most_common()))
+    if provider_notes:
+        # A provider or category that failed is reported rather than silently
+        # missing, and the city's coverage note can then link out to it.
+        print("  ! some sources didn't answer: " + "; ".join(provider_notes))
     if not had_history:
         print(f"  no previous run to compare against, so none are marked new — "
               f"all {len(listings)} are recorded as first seen now")
@@ -2408,7 +2838,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # A city each, unless one was named. --once with no --city scrapes every
     # city, which is what the publish workflow wants.
-    scrape_cities = [args.city] if args.city else list(CITIES)
+    # Naming a city scrapes exactly that one, enabled or not — which is how a
+    # city gets checked before it goes live. Omitting --city scrapes only the
+    # cities marked enabled, so an unverified one can sit in the registry without
+    # reaching the published site.
+    scrape_cities = ([args.city] if args.city
+                     else [c for c, conf in CITIES.items() if conf.get("enabled", True)])
     for _c in scrape_cities:
         city_conf(_c)   # fail fast on a typo, before a minute of scraping
 

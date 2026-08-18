@@ -118,6 +118,10 @@ jobs:
           every = int(os.environ["UPDATE_EVERY_HOURS"])
           index, published = {}, 0
           for cid, conf in CITIES.items():
+              if not conf.get("enabled", True):
+                  # Registered but not verified yet — see the registry comment.
+                  print(f"{cid}: not enabled — skipped")
+                  continue
               path = listings_file(cid)
               if not path.exists():
                   # A city whose scrape has never succeeded is left out of the

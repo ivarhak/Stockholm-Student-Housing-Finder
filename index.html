@@ -1234,6 +1234,7 @@ function computeProviderInfo(){
       // decide how a whole provider is drawn.
       kind: rows.length && areaBacked > rows.length / 2 ? 'area' : 'pin',
       statesQueue: rows.some(l => l.queue_days != null),
+      statesApplicants: rows.some(l => l.applicants != null),
       statesDeadline: rows.some(l => l.deadline),
       chip: lbl.chip || name,
       abbr: lbl.abbr || name,
@@ -1511,6 +1512,7 @@ function sortNote(){
   const parts = Object.entries(providerInfo).map(([name, info]) => {
     const abbr = info.abbr || name;
     if (info.statesQueue) return `${abbr} sorted by queue days`;
+    if (info.statesApplicants) return `${abbr} by fewest applicants`;
     if (info.statesDeadline) return `${abbr} by deadline`;
     return `${abbr} by rent`;
   });
@@ -2138,6 +2140,9 @@ function badgeFor(l){
   if (info.statesQueue) {
     return l.queue_days != null ? l.queue_days.toLocaleString() + ' days' : '— days';
   }
+  if (info.statesApplicants) {
+    return l.applicants != null ? l.applicants + ' applied' : 'open now';
+  }
   if (info.statesDeadline) {
     return l.deadline ? 'apply by ' + String(l.deadline).slice(0,10) : 'open now';
   }
@@ -2153,6 +2158,10 @@ function sortListings(rows){
     if (a.provider !== b.provider) return slot(a) - slot(b);
     const info = providerInfo[a.provider] || {};
     if (info.statesQueue) return (a.queue_days ?? 1e9) - (b.queue_days ?? 1e9);
+    // Fewest applicants first where a provider publishes that instead of a
+    // queue length — it's the same question ("how gettable is this?") asked the
+    // other way round.
+    if (info.statesApplicants) return (a.applicants ?? 1e9) - (b.applicants ?? 1e9);
     if (info.statesDeadline)
       return String(a.deadline || '9999').localeCompare(String(b.deadline || '9999'));
     return (Number(a.rent_sek) || 1e9) - (Number(b.rent_sek) || 1e9);
@@ -2185,6 +2194,8 @@ function rowHtml(l, newIds){
     .filter(Boolean).map(v => v + ' · ').join('');
   // Only what the listing actually states — a silent card shows neither.
   const extras = [];
+  if (l.applicants != null) extras.push(`${l.applicants} applied`);
+  if (l.novice_priority) extras.push('novice priority');
   if (l.floor != null) extras.push(Number(l.floor) === 0 ? 'ground floor' : 'floor ' + l.floor);
   if (l.el_included === true) extras.push('el ingår');
   // Elevator and balcony come from Bostadsförmedlingen's feed, which states
