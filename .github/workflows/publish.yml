@@ -70,6 +70,13 @@ jobs:
       #    map dots. Nominatim asks for 1 req/sec and no bulk geocoding; without
       #    this the runner would re-look-up all of them every two hours, which
       #    would be exactly the abuse that policy is about.
+      #  · geocode_cache.json — area and campus coordinates. The committed copy
+      #    covers Stockholm, but a city added since then has areas and campuses
+      #    that aren't in it, and without this the runner would re-resolve every
+      #    one of them on every run — ~28 lookups twelve times a day, at
+      #    Nominatim's 1 req/sec, for coordinates that never move. The real fix
+      #    is committing the file once a city's pins are checked; this is the
+      #    safety net for the window before that.
       #  · grocery_cache.json — the chain supermarkets. Left out of this list at
       #    first, which meant every publish threw the list away and re-asked
       #    Overpass from scratch: 12 full queries a day to a free community
@@ -85,6 +92,7 @@ jobs:
             data/current_listings.json
             data/current_listings_*.json
             data/address_cache.json
+            data/geocode_cache.json
             data/grocery_cache.json
           key: sshf-scrape-cache-
           restore-keys: sshf-scrape-cache-
@@ -170,6 +178,7 @@ jobs:
             data/current_listings.json
             data/current_listings_*.json
             data/address_cache.json
+            data/geocode_cache.json
             data/grocery_cache.json
           key: sshf-scrape-cache-${{ github.run_id }}
 

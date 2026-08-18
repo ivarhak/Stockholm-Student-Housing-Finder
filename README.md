@@ -441,6 +441,24 @@ all of them permissive but worth knowing if you fork this:
 
 ## Roadmap
 
+**Göteborg and Lund are written and tested, but not switched on.** Both scrape,
+parse and render — SGS via Göteborg's Momentum API, AF Bostäder in Lund. What's
+missing is a look at the map: their campus addresses and area centres have never
+been geocoded for real, so each city sits in the registry with
+`"enabled": False` and the published site still builds Stockholm alone.
+
+To check one and turn it on:
+
+```sh
+python monitor.py --once --city goteborg   # scrapes for real, geocodes for real
+python monitor.py                          # then open localhost:5055/#goteborg
+```
+
+Correct anything silly in `data/geocode_cache.json` (campus entries are keyed
+`campus:Chalmers`), commit that file so the runner doesn't re-resolve them, then
+flip `enabled` to `True` in that city's registry entry. That flag is the only
+switch — the scrape, the picker and the published site all read it.
+
 **Next up: more student cities.** The scrape, the payload and the dashboard are
 already scoped per city — each one has its own registry entry, its own campuses
 and its own data file, and you pick a city from the URL (`…/#lund`). Stockholm is
