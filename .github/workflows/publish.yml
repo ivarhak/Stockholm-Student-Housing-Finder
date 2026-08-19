@@ -77,13 +77,15 @@ jobs:
       #    Nominatim's 1 req/sec, for coordinates that never move. The real fix
       #    is committing the file once a city's pins are checked; this is the
       #    safety net for the window before that.
-      #  · grocery_cache.json — the chain supermarkets. Left out of this list at
-      #    first, which meant every publish threw the list away and re-asked
-      #    Overpass from scratch: 12 full queries a day to a free community
-      #    service, and a map with no shop dots whenever one of them was busy.
-      #    The file has a 30-day expiry of its own, so caching it here doesn't
-      #    freeze the data — it just stops us asking twelve times a day for an
-      #    answer that changes about once a year.
+      #  · grocery_cache.json / grocery_cache_*.json — the chain supermarkets, one
+      #    file per city (grocery_cache.json is specifically Stockholm's — see
+      #    grocery_cache_file() in monitor.py). Left out of this list at first,
+      #    which meant every publish threw the list away and re-asked Overpass
+      #    from scratch: 12 full queries a day to a free community service, and a
+      #    map with no shop dots whenever one of them was busy. Each file has a
+      #    30-day expiry of its own, so caching it here doesn't freeze the data —
+      #    it just stops us asking twelve times a day for an answer that changes
+      #    about once a year.
       - name: Restore scrape caches
         uses: actions/cache/restore@v4
         with:
@@ -94,6 +96,7 @@ jobs:
             data/address_cache.json
             data/geocode_cache.json
             data/grocery_cache.json
+            data/grocery_cache_*.json
           key: sshf-scrape-cache-
           restore-keys: sshf-scrape-cache-
 
@@ -189,6 +192,7 @@ jobs:
             data/address_cache.json
             data/geocode_cache.json
             data/grocery_cache.json
+            data/grocery_cache_*.json
           key: sshf-scrape-cache-${{ github.run_id }}
 
       - name: Configure Pages

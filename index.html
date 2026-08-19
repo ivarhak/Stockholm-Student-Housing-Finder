@@ -2018,8 +2018,13 @@ let groceryRenderer = null;
 let lastSplitSignature = '';
 // Below this zoom the dots blanket the city and bury the area roundels, which
 // are the actual point of the map. They earn their place once you've zoomed into
-// a neighbourhood to size it up.
-const GROCERY_MIN_ZOOM = 13;
+// a neighbourhood to size it up. Was 13, which was still wide enough to cover
+// something like half of Stockholm at once — dots scattered across areas the
+// person hadn't zoomed toward read as noise, not an answer. Raised to match
+// AREA_SPLIT_ZOOM, the zoom this file already treats as "a neighbourhood" for
+// splitting an area into per-building dots — one shared meaning for that line
+// rather than a second, arbitrarily different number.
+const GROCERY_MIN_ZOOM = 14;
 
 function buildGroceryLayer(){
   if (groceryLayer) { leafletMap.removeLayer(groceryLayer); groceryLayer = null; }

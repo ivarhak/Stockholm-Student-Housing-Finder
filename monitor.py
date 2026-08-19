@@ -804,7 +804,27 @@ def _grocery_chain(*names) -> str | None:
     return None
 
 
-def _load_grocery_cache() -> tuple[list | None, bool]:
+def grocery_cache_file(city: str) -> Path:
+    """Stockholm keeps the original filename on purpose: `data/grocery_cache.json`
+    is committed (see the .gitignore comment on it) — a hand-gathered 383-store
+    list that's the whole reason an Overpass-unreliable Actions runner still
+    ships shop dots. Renaming it would orphan that safety net for no reason.
+
+    Every other city gets its own file. Sharing one file across every city was a
+    real bug, not a simplification: `_load_grocery_cache()` had no city in it at
+    all, so once Stockholm's own fetch had populated the cache, Göteborg and
+    Lund's calls to fetch_grocery_stores() — each with their own correct bbox
+    passed in — hit the freshness check first and got Stockholm's 383 stores
+    handed back unchanged. The bbox argument was being silently ignored. Visibly
+    it looked fine (`shops: 383` printed for every city, every run) because
+    nothing compared that count against the city it was supposedly for — the
+    dots were just never on screen, hundreds of kilometres from wherever the map
+    was actually centred.
+    """
+    return GROCERY_CACHE_FILE if city == DEFAULT_CITY else DATA_DIR / f"grocery_cache_{city}.json"
+
+
+def _load_grocery_cache(cache_file: Path) -> tuple[list | None, bool]:
     """(stores, is_fresh). `stores` is None only if there's no readable cache.
 
     Freshness and usability are deliberately separate answers. A stale cache
@@ -812,10 +832,10 @@ def _load_grocery_cache() -> tuple[list | None, bool]:
     fails — supermarkets don't move, so last month's list is still basically
     right, while an empty list silently removes the feature from the map.
     """
-    if not GROCERY_CACHE_FILE.exists():
+    if not cache_file.exists():
         return None, False
     try:
-        cached = json.loads(GROCERY_CACHE_FILE.read_text())
+        cached = json.loads(cache_file.read_text())
         stores = cached["stores"]
         fetched = datetime.fromisoformat(cached["fetched_at"])
     except (ValueError, KeyError, TypeError, OSError):
@@ -832,8 +852,9 @@ def _load_grocery_cache() -> tuple[list | None, bool]:
     return stores, True
 
 
-def fetch_grocery_stores(bbox: tuple | None = None) -> tuple[list[dict], list[str]]:
-    """Chain supermarkets in greater Stockholm, as ([{name, chain, coords}], notes).
+def fetch_grocery_stores(bbox: tuple | None = None, city: str = DEFAULT_CITY
+                          ) -> tuple[list[dict], list[str]]:
+    """Chain supermarkets in the given city's bbox, as ([{name, chain, coords}], notes).
 
     Never fatal: the map is perfectly usable without shop dots, so any failure
     degrades to an empty list with a printed reason rather than stopping a scrape.
@@ -843,7 +864,8 @@ def fetch_grocery_stores(bbox: tuple | None = None) -> tuple[list[dict], list[st
     the very start of a scrape: in an Actions log the reason ends up ~600 lines
     above the end, and a run that shipped no shops read as a normal green build.
     """
-    cached, fresh = _load_grocery_cache()
+    cache_file = grocery_cache_file(city)
+    cached, fresh = _load_grocery_cache(cache_file)
     if fresh:
         return cached, [f"{len(cached)} from the on-disk cache"]
     notes = []
@@ -920,7 +942,7 @@ out center tags;
     print("  " + ", ".join(f"{c} ({n})" for c, n in counts.most_common()))
 
     if stores:
-        GROCERY_CACHE_FILE.write_text(json.dumps(
+        cache_file.write_text(json.dumps(
             {"fetched_at": datetime.now(timezone.utc).isoformat(), "stores": stores},
             ensure_ascii=False, indent=1))
         return stores, notes
@@ -2588,7 +2610,7 @@ def _run_scrape_impl(debug: bool = False, use_login: bool = False,
     # Campuses may be given as addresses rather than coordinates; resolve once,
     # then everything downstream sees the same shape Stockholm always had.
     conf = {**conf, "schools": resolve_schools(conf, geocode_cache)}
-    grocery_stores, grocery_notes = fetch_grocery_stores(conf["grocery_bbox"])
+    grocery_stores, grocery_notes = fetch_grocery_stores(conf["grocery_bbox"], city)
     if not grocery_stores and previous.get("groceries"):
         # Last line of defence: a lookup that failed with no cache on disk would
         # otherwise publish a payload with no shops, and the dashboard hides its

@@ -14,8 +14,13 @@ data/cities.json
 #    a list gathered from a normal connection is what lets the published site
 #    have shop dots at all. It carries its own 30-day expiry, so a stale
 #    committed copy still gets refreshed whenever a fetch does succeed.
+#    Stockholm keeps this bare filename specifically — see grocery_cache_file()
+#    in monitor.py. Every other city's own grocery cache IS ignored below,
+#    same as their listings: nobody has gathered and checked in a verified
+#    Göteborg/Lund list from an ordinary connection yet.
 data/bike_route_cache.json
 data/address_cache.json
+data/grocery_cache_*.json
 
 # certifi's roots plus the intermediate certificate some server forgot to send,
 # rebuilt on demand from the CA the certificate itself points at. Machine-local
