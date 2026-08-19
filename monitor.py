@@ -2305,6 +2305,20 @@ SGS_CATEGORIES = {
     "VqcHjmtPBDFwFFTVb4fydPxw": "Studentbostad Express",
 }
 
+# The endpoint started answering every request with HTTP 407 InvalidApiKey —
+# "Appen är inte registrerad" / "API-nyckel måste anges" — an Azure API
+# Management rejection for a missing subscription key, confirmed once _why()
+# started printing response bodies instead of a bare status code. These two
+# headers are what minasidor.sgs.se's own frontend sends on every request to
+# this same endpoint, pulled from a real DevTools Network tab. Neither is a
+# login or a personal credential — they're shipped in cleartext to every
+# visitor's browser to let the public listings page work at all, the same
+# category of thing as SGS_API itself, just delivered as a header instead of
+# baked into a URL. If SGS ever rotates them, the fix is a DevTools trip, not
+# a code change: the two headers below are the only place they're used.
+SGS_API_KEY = "pJnKrR6B3FzRNFsF33xL8LhSs55KPJrm"
+SGS_DEVICE_KEY = "217e1014f02547078d060a0a0f47f2ba"
+
 
 def _dotnet_date(value) -> str | None:
     """`/Date(1790805600000)/` -> `'2026-09-30'`.
@@ -2356,6 +2370,10 @@ def fetch_sgs(categories=None) -> tuple[list[dict], list[str]]:
                 # somebody else.
                 "Referer": SGS_SITE,
                 "Origin": "https://minasidor.sgs.se",
+                # The actual fix — see the comment on SGS_API_KEY above. Header
+                # names as sent by the real frontend, lowercase.
+                "x-api-key": SGS_API_KEY,
+                "x-momentum-device-key": SGS_DEVICE_KEY,
             }, timeout=30)
             resp.raise_for_status()
             payload = _decode_json(resp)
