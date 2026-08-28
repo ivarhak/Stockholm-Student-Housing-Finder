@@ -1938,7 +1938,19 @@ function initMap(){
   // line Leaflet's default blue. Scoping it keeps both: hundreds of dots in one
   // canvas element, polylines still styleable from CSS.
   groceryRenderer = L.canvas({ padding: 0.5 });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  // CARTO started requiring a key for raster basemap tiles and retiring
+  // anonymous access — an unkeyed request now gets a tile with "API KEY
+  // REQUIRED" burned into the image instead of the map. Not a secret: it's
+  // domain-restricted (registered to this exact Pages URL at
+  // carto.com/basemaps/apikey/) and ships in client-side JS regardless, same
+  // as the SGS keys above. Free under CARTO's fair-use ceiling — 5M tile
+  // loads/month, nowhere close to what a personal dashboard draws.
+  // URL shape is CARTO's own confirmed-working one from the key email, not
+  // the old {s} subdomain / {r} retina form: {r} was already a no-op here
+  // (it only becomes @2x with `detectRetina: true`, never set), and the new
+  // key-gated endpoint may not be provisioned across the old a/b/c subdomains.
+  const CARTO_API_KEY = 'cb1_2hzr_1_e29190e7aea61ad10c224478';
+  L.tileLayer(`https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=${CARTO_API_KEY}`, {
     maxZoom: 18,
     // Required, not decorative: CARTO's terms ask for it, and the shop dots are
     // OSM-derived data under ODbL, which requires attribution. Styled small and
