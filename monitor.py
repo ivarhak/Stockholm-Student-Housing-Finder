@@ -1345,17 +1345,34 @@ def _parse_listing_from_link(link, url: str) -> dict:
      max_years, el_included) = _parse_card_fields(card_text)
 
     # Street address, e.g. "Forskarbacken 10" out of "Forskarbacken 10 / 1002".
-    # The apartment number is dropped: it's no use for geocoding, and several
-    # listings in the same building should share one cache entry.
+    # The apartment number is dropped here specifically: it's no use for
+    # geocoding, and several listings in the same building should share one
+    # cache entry. It's not thrown away, though — see `id` below.
     addr_match = _CARD_ADDRESS_RE.search(card_text)
     address = None
+    unit = None
     if addr_match:
         address = f"{addr_match.group('street')} {addr_match.group('number')}"
         if addr_match.group("entrance"):
             address += f" {addr_match.group('entrance')}"   # "Armégatan 32 A"
+        unit = addr_match.group("unit")
 
     return {
-        "id": url,
+        # NOT the refid link — confirmed live (2026-08-30) that it doesn't
+        # survive between scrapes. Two independent runs 3.5h apart both
+        # reported "new: 70 first seen ... (70 of them this run)" for
+        # Stockholm's ~70 SSSB listings — the whole set, every time, which
+        # SSSB does not actually replace every few hours. `id = url` meant
+        # every listing looked brand new on every single scrape: SSSB mints a
+        # fresh refid token per page render (this project's own Selenium
+        # fallback launches a fresh browser session each run), so the link
+        # still resolves fine but never matches its own value from last time.
+        # area + address + the apartment/unit number is a real, physical
+        # designation of the room that doesn't change between scrapes, which
+        # a URL token never was. Falls back to the URL only when the address
+        # regex didn't match at all — rare, and no worse than today's always-
+        # wrong behavior for exactly those few cards.
+        "id": f"sssb-{area}-{address}-{unit}" if address and unit else url,
         "area": area,
         "address": address,
         "raw_text": card_text[:300],
@@ -1445,9 +1462,16 @@ _CARD_TYPE_RE = re.compile(r"^(?:Previous\s+Next\s+)?(.*?)\s+\S+\s+\d+\s*/\s*\d+
 # take the run of up-to-three capitalised words immediately before the number —
 # the housing type that precedes it always ends in a lowercase word ("rum i
 # korridor", "1 rum & kök"), which is what stops the run from swallowing it.
+# The trailing `/\s*\d+` was always part of this match — it's the anchor that
+# stops the street-name run at the right point — but the apartment number
+# itself went uncaptured. That number is a physical unit designation on the
+# building (floor + door, by the look of "1512", "1301", "1207"), which makes
+# it exactly the stable-per-room key `id` below needed and never had: SSSB's
+# listing `id` was the refid link itself, and that link is not a permanent
+# identifier for the room, only a valid one — see the `id` comment below.
 _CARD_ADDRESS_RE = re.compile(
     r"(?P<street>(?:[A-ZÅÄÖ][\wåäöÅÄÖ:.\-]*\s+){0,2}[A-ZÅÄÖ][\wåäöÅÄÖ:.\-]*)"
-    r"\s+(?P<number>\d+)\s*(?P<entrance>[A-ZÅÄÖ])?\s*/\s*\d+"
+    r"\s+(?P<number>\d+)\s*(?P<entrance>[A-ZÅÄÖ])?\s*/\s*(?P<unit>\d+)"
 )
 
 _TYPE_TRANSLATIONS = {
