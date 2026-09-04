@@ -759,6 +759,13 @@
   .city-option:focus-visible{outline:2px solid var(--leaf);outline-offset:2px;}
   .city-option .city-name{font-family:var(--display);font-weight:700;font-size:15px;}
   .city-option .city-meta{font-family:var(--mono);font-size:10.5px;color:var(--dim);}
+  .wip-tag{
+    display:inline-block;margin-left:7px;
+    font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:.05em;
+    background:var(--ochre);color:var(--bg);
+    padding:2px 6px;border-radius:3px;
+    vertical-align:1px;
+  }
 
   /* ── Phones ──────────────────────────────────────────────
      Everything mobile lives in this one block, at the end of the sheet, so the
@@ -1687,6 +1694,11 @@ function applyProviderChrome(){
   }
 }
 
+// Their providers work, but the area/campus lists behind them haven't had the
+// scrutiny Stockholm's have — flagged in the picker itself rather than left
+// for Ivar to discover after picking. Hand-remove an id here once it's caught up.
+const WIP_CITIES = new Set(['goteborg', 'lund']);
+
 function openCityPicker(){
   const box = document.getElementById('cityOptions');
   box.innerHTML = '';
@@ -1699,6 +1711,16 @@ function openCityPicker(){
     if (c.providers && c.providers.length) bits.push(c.providers.join(' + '));
     b.innerHTML = `<span class="city-name"></span><span class="city-meta"></span>`;
     b.querySelector('.city-name').textContent = c.name;
+    if (WIP_CITIES.has(id)) {
+      // Appended *inside* .city-name, not as a sibling: .city-option is a
+      // column flex container, so a sibling span becomes its own flex item
+      // and stretches into a full-width row instead of sitting next to the
+      // name (caught in a real-browser screenshot before this fix).
+      const tag = document.createElement('span');
+      tag.className = 'wip-tag';
+      tag.textContent = 'Work in progress';
+      b.querySelector('.city-name').appendChild(tag);
+    }
     b.querySelector('.city-meta').textContent = bits.join(' · ');
     b.addEventListener('click', () => selectCity(id));
     box.appendChild(b);
